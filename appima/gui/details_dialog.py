@@ -134,7 +134,7 @@ class AppDetailsDialog(QDialog):
         # Bottom single-home action bar
         divider = QFrame()
         divider.setFrameShape(QFrame.Shape.HLine)
-        divider.setFrameShadow(QFrame.Shape.Sunken)
+        divider.setFrameShadow(QFrame.Shadow.Sunken)
         root.addWidget(divider)
 
         actions = QHBoxLayout()
