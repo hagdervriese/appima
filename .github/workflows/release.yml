@@ -58,13 +58,13 @@ jobs:
       - name: Build AppImage
         run: bash packaging/build_appimage.sh
 
-      - name: Smoke-test built AppImage (CLI + headless Qt)
+      - name: Smoke-test built AppImage (CLI + checksum)
         run: |
           APPIMAGE_BIN="$(ls dist/appima-*.AppImage | head -n 1)"
           "${APPIMAGE_BIN}" --appimage-extract-and-run --version
           "${APPIMAGE_BIN}" --appimage-extract-and-run --help >/dev/null
           "${APPIMAGE_BIN}" --appimage-extract-and-run list
-          sha256sum -c dist/SHA256SUMS --ignore-missing || (cd dist && sha256sum -c SHA256SUMS)
+          (cd dist && sha256sum -c SHA256SUMS)
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

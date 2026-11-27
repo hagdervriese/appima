@@ -4,6 +4,6 @@ Name=appima
 Comment=Minimalist AppImage & Portable App Manager
 Exec=appima
 Icon=appima
-Categories=System;Settings;Utility;
+Categories=System;
 Terminal=false
 StartupWMClass=appima

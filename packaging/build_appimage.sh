@@ -28,7 +28,8 @@ python3 -m PyInstaller \
   --distpath "${BUILD_DIR}/pyinstaller-dist" \
   --workpath "${BUILD_DIR}/pyinstaller-work" \
   --specpath "${BUILD_DIR}" \
-  --add-data "appima/gui/assets:appima/gui/assets" \
+  --paths "${REPO_ROOT}" \
+  --add-data "${REPO_ROOT}/appima/gui/assets:appima/gui/assets" \
   --collect-submodules appima \
   --hidden-import PySide6.QtSvg \
   --exclude-module PySide6.QtWebEngineCore \
@@ -50,7 +51,7 @@ python3 -m PyInstaller \
   --exclude-module PySide6.QtSerialPort \
   --exclude-module PySide6.QtTest \
   --exclude-module tkinter \
-  packaging/entrypoint.py
+  "${REPO_ROOT}/packaging/entrypoint.py"
 
 mv "${BUILD_DIR}/pyinstaller-dist/appima-bin" "${APPDIR}/usr/lib/appima"
 
@@ -113,7 +114,7 @@ fi
 
 # 6. Build the AppImage
 echo "==> Packaging ${OUT_PATH}"
-ARCH="${ARCH}" "${APPIMAGETOOL}" --appimage-extract-and-run "${APPDIR}" "${OUT_PATH}"
+ARCH="${ARCH}" "${APPIMAGETOOL}" --appimage-extract-and-run --no-appstream "${APPDIR}" "${OUT_PATH}"
 chmod 0755 "${OUT_PATH}"
 
 # 7. Generate SHA256SUMS
