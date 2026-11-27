@@ -9,7 +9,11 @@ from pathlib import Path
 from appima import __version__
 from appima.core.config import AppimaPaths
 from appima.core.manager import AppManager
-from appima.core.runtime import SELF_APP_ID, SELF_GITHUB_REPO
+from appima.core.runtime import (
+    SELF_APP_ID,
+    SELF_GITHUB_REPO,
+    clean_subprocess_env,
+)
 from appima.service.systemd import render_service_unit, sync_update_timer
 
 
@@ -72,19 +76,44 @@ class SelfIntegrationTests(unittest.TestCase):
             )
             self.assertIn(f'ExecStart="{expected_bin}" check --notify', written)
 
-    def test_integrate_self_in_place_when_already_in_apps_dir(self) -> None:
+    def test_integrate_self_canonicalizes_and_cleans_old_versioned_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             mgr = self._make_manager(root)
 
             apps_dir = root / "Apps"
             apps_dir.mkdir(parents=True)
-            already_there = apps_dir / "appima-0.1.0-x86_64.AppImage"
+            already_there = apps_dir / "appima-0.1.3-x86_64.AppImage"
+            older_leftover = apps_dir / "appima-0.1.0-x86_64.AppImage"
             already_there.write_bytes(_fake_appimage_bytes())
+            older_leftover.write_bytes(_fake_appimage_bytes())
 
             rec = mgr.integrate_self(appimage_path=already_there)
-            self.assertEqual(Path(rec.install_path).resolve(), already_there.resolve())
-            self.assertFalse(mgr.needs_self_integration(appimage_path=already_there))
+            canonical = (apps_dir / "appima.AppImage").resolve()
+            self.assertEqual(Path(rec.install_path).resolve(), canonical)
+            self.assertTrue(canonical.is_file())
+            self.assertFalse(already_there.exists())
+            self.assertFalse(older_leftover.exists())
+            self.assertFalse(mgr.needs_self_integration(appimage_path=canonical))
+
+    def test_clean_subprocess_env_strips_appimage_mount_vars(self) -> None:
+        dirty = {
+            "HOME": "/home/test",
+            "APPIMAGE": "/home/test/Apps/appima.AppImage",
+            "APPDIR": "/tmp/.mount_appima123",
+            "OWD": "/home/test",
+            "PATH": "/tmp/.mount_appima123/usr/bin:/usr/bin",
+            "LD_LIBRARY_PATH": "/tmp/.mount_appima123/usr/lib:/custom/lib",
+            "LD_LIBRARY_PATH_ORIG": "/custom/lib",
+            "PYTHONHOME": "/tmp/.mount_appima123/usr",
+        }
+        cleaned = clean_subprocess_env(dirty)
+        self.assertNotIn("APPIMAGE", cleaned)
+        self.assertNotIn("APPDIR", cleaned)
+        self.assertNotIn("OWD", cleaned)
+        self.assertNotIn("PYTHONHOME", cleaned)
+        self.assertEqual(cleaned["PATH"], "/usr/bin")
+        self.assertEqual(cleaned["LD_LIBRARY_PATH"], "/custom/lib")
 
 
 if __name__ == "__main__":

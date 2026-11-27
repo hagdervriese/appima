@@ -466,15 +466,36 @@ class AppManager:
                 record.backup_path = str(backup_file)
                 record.backup_version = record.installed_version
 
-            # Swap binary at the exact existing install_path so pinned icons stay valid
-            target_dir = current_path.parent
+            # Swap binary cleanly into canonical <apps_dir>/<id>.AppImage (removing any old versioned filename)
+            apps_dir = self.config.apps_dir.expanduser().resolve()
+            apps_dir.mkdir(parents=True, exist_ok=True)
+            canonical_path = apps_dir / f"{record.id}.AppImage"
+            try:
+                in_apps_dir = current_path.expanduser().resolve().parent == apps_dir
+            except OSError:
+                in_apps_dir = False
+
+            target_path = canonical_path if in_apps_dir else current_path
+            target_dir = target_path.parent
             target_dir.mkdir(parents=True, exist_ok=True)
-            tmp_target = target_dir / f".{current_path.name}.updating"
+            tmp_target = target_dir / f".{target_path.name}.updating"
             shutil.copy2(staged_path, tmp_target)
             tmp_target.chmod(0o755)
-            tmp_target.replace(current_path)
+            tmp_target.replace(target_path)
+
+            # Delete old versioned file inside apps_dir if canonicalized
+            try:
+                if current_path.resolve() != target_path.resolve() and current_path.is_file():
+                    current_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+            # Clean up any leftover old appima-*.AppImage copies in apps_dir during self-update
+            if record.id == SELF_APP_ID:
+                self._cleanup_stale_self_appimages(apps_dir, keep_path=target_path)
 
             now = _utc_now()
+            record.install_path = str(target_path)
             record.installed_version = release.version
             record.available_version = ""
             record.available_download_url = ""
@@ -668,15 +689,29 @@ class AppManager:
         running = running.resolve()
         apps_dir = self.config.apps_dir.expanduser().resolve()
         apps_dir.mkdir(parents=True, exist_ok=True)
-        in_place = running.parent == apps_dir
+        canonical_path = apps_dir / f"{SELF_APP_ID}.AppImage"
 
         fmt = self._format_by_id("appimage")
-        installed_path = fmt.install_file(
-            running,
-            apps_dir,
-            SELF_APP_ID,
-            in_place=in_place,
-        )
+        if running == canonical_path:
+            installed_path = fmt.install_file(
+                running,
+                apps_dir,
+                SELF_APP_ID,
+                in_place=True,
+            )
+        else:
+            installed_path = fmt.install_file(
+                running,
+                apps_dir,
+                SELF_APP_ID,
+                in_place=False,
+            )
+            # If the user launched a versioned appima-*.AppImage already inside apps_dir,
+            # remove that old duplicate so apps_dir stays clean with a single appima.AppImage.
+            if running.parent == apps_dir:
+                running.unlink(missing_ok=True)
+
+        self._cleanup_stale_self_appimages(apps_dir, keep_path=installed_path)
 
         # Prefer appima's own SVG icon asset if SquashFS extraction didn't yield one
         metadata = fmt.inspect(installed_path)
@@ -724,6 +759,23 @@ class AppManager:
         record.icon_path = str(icon_path) if icon_path else ""
         self.db.upsert_app(record)
         return record
+
+    @staticmethod
+    def _cleanup_stale_self_appimages(apps_dir: Path, keep_path: Path) -> None:
+        """Remove stale versioned appima-*.AppImage files left inside apps_dir."""
+        if not apps_dir.is_dir():
+            return
+        keep_resolved = keep_path.resolve()
+        for candidate in apps_dir.iterdir():
+            if not candidate.is_file():
+                continue
+            low = candidate.name.lower()
+            if low.startswith("appima-") and low.endswith(".appimage"):
+                try:
+                    if candidate.resolve() != keep_resolved:
+                        candidate.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def _unique_app_id(self, name: str) -> str:
         base = slugify_app_id(name)

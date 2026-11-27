@@ -5,9 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 import traceback
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QIcon, QMouseEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -22,7 +23,7 @@ from PySide6.QtWidgets import (
 
 from appima.core.manager import AppManager
 from appima.core.models import AppimaError, AppRecord, UpdateCheckResult
-from appima.core.runtime import SELF_APP_ID
+from appima.core.runtime import SELF_APP_ID, relaunch_appima
 from appima.gui.add_dialog import AddAppDialog
 from appima.gui.details_dialog import AppDetailsDialog
 from appima.gui.settings_dialog import SettingsDialog
@@ -420,7 +421,13 @@ class MainWindow(QMainWindow):
 
         self.check_btn.setEnabled(False)
         self.add_btn.setEnabled(False)
-        self.footer_label.setText(f"Updating {rec.name}…")
+        is_self = app_id == SELF_APP_ID
+        if is_self:
+            self.footer_label.setText(
+                f"Updating {rec.name}… (appima will restart automatically after update)"
+            )
+        else:
+            self.footer_label.setText(f"Updating {rec.name}…")
 
         self._update_worker = ProgressWorker(
             lambda cb, cancel: self.manager.update_app(
@@ -429,19 +436,24 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         self._update_worker.progress.connect(
-            lambda done, total: self._on_update_progress(rec.name, done, total)
+            lambda done, total: self._on_update_progress(
+                rec.name, done, total, is_self=is_self
+            )
         )
         self._update_worker.finished_ok.connect(self._on_update_done)
         self._update_worker.failed.connect(self._on_update_error)
         self._update_worker.start()
 
-    def _on_update_progress(self, name: str, done: int, total: object) -> None:
+    def _on_update_progress(
+        self, name: str, done: int, total: object, is_self: bool = False
+    ) -> None:
+        suffix = " — will restart after update" if is_self else ""
         if isinstance(total, int) and total > 0:
             pct = min(100, int(done * 100 / total))
-            self.footer_label.setText(f"Updating {name}… {pct}%")
+            self.footer_label.setText(f"Updating {name}… {pct}%{suffix}")
         else:
             self.footer_label.setText(
-                f"Updating {name}… {done / (1024 * 1024):.1f} MiB"
+                f"Updating {name}… {done / (1024 * 1024):.1f} MiB{suffix}"
             )
 
     def _on_update_done(self, record: AppRecord) -> None:
@@ -450,11 +462,23 @@ class MainWindow(QMainWindow):
         self.refresh_apps()
         if record.id == SELF_APP_ID:
             self.footer_label.setText(
-                f"Updated appima to v{record.installed_version} — restart appima to use the new version."
+                f"Updated appima to v{record.installed_version} — restarting automatically…"
+            )
+            QTimer.singleShot(
+                1200, lambda path=record.install_path: self._restart_self(path)
             )
         else:
             self.footer_label.setText(
                 f"Updated {record.name} to version {record.installed_version}."
+            )
+
+    def _restart_self(self, binary_path: str) -> None:
+        try:
+            relaunch_appima(binary_path)
+            QApplication.quit()
+        except OSError as exc:
+            self.footer_label.setText(
+                f"Updated appima — please restart manually ({exc})."
             )
 
     def _integrate_self(self) -> None:
