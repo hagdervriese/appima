@@ -7,6 +7,7 @@ import http.server
 import io
 import json
 import sqlite3
+import struct
 import tarfile
 import tempfile
 import threading
@@ -153,6 +154,67 @@ class ArchiveFormatTests(unittest.TestCase):
             self.assertTrue(rec2.exec_path.endswith("/antigravity"))
             self.assertTrue(Path(rec2.exec_path).stat().st_mode & 0o111)
             self.assertTrue(rec2.icon_path.endswith(".png"))
+            # Icons live in <apps_dir>/.icons/
+            self.assertEqual(
+                Path(rec2.icon_path).parent.resolve(), (root / "Apps" / ".icons").resolve()
+            )
+
+    def test_electron_app_asar_icon_extraction_and_dot_icons_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mgr = self._make_manager(root)
+
+            # Build an Electron folder with icon ONLY inside resources/app.asar
+            app_dir = root / "Apps" / "Antigravity-x64"
+            res_dir = app_dir / "resources"
+            res_dir.mkdir(parents=True)
+            bin_path = app_dir / "antigravity"
+            bin_path.write_bytes(_make_elf(b"ag"))
+            bin_path.chmod(0o755)
+
+            png_payload = b"\x89PNG\r\n\x1a\n" + b"real-icon-data" * 20
+            decoy_payload = b"\x89PNG\r\n\x1a\n" + b"decoy" * 50
+            header_obj = {
+                "files": {
+                    "icon.png": {"size": len(png_payload), "offset": "0"},
+                    "node_modules": {
+                        "files": {
+                            "pkg": {
+                                "files": {
+                                    "icon.png": {
+                                        "size": len(decoy_payload),
+                                        "offset": str(len(png_payload)),
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+            header_bytes = json.dumps(header_obj).encode("utf-8")
+            str_len = len(header_bytes)
+            padded_len = (str_len + 3) & ~3
+            header_padded = header_bytes + b"\x00" * (padded_len - str_len)
+            # Electron ASAR pickle header: [4, header_size, header_payload, str_len]
+            header_size = 8 + padded_len
+            pickle_hdr = struct.pack("<IIII", 4, header_size, 4 + padded_len, str_len)
+            (res_dir / "app.asar").write_bytes(
+                pickle_hdr + header_padded + png_payload + decoy_payload
+            )
+
+            rec = mgr.install_app(str(app_dir))
+            icon_p = Path(rec.icon_path)
+            self.assertTrue(icon_p.is_file())
+            self.assertEqual(icon_p.parent.resolve(), (root / "Apps" / ".icons").resolve())
+            self.assertEqual(icon_p.read_bytes(), png_payload)
+            self.assertIn(
+                f"Icon={icon_p}",
+                Path(rec.desktop_file).read_text(encoding="utf-8"),
+            )
+
+            # Uninstall cleans up the icon in <apps_dir>/.icons too
+            mgr.uninstall_app(rec.id)
+            self.assertFalse(icon_p.exists())
 
     def test_zip_slip_traversal_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

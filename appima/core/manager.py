@@ -78,6 +78,11 @@ class AppManager:
         self._custom_providers = providers
 
     @property
+    def icons_dir(self) -> Path:
+        """Directory storing extracted app icons alongside managed apps (<apps_dir>/.icons)."""
+        return self.config.apps_dir.expanduser() / ".icons"
+
+    @property
     def providers(self) -> list[SourceProvider]:
         if self._custom_providers is not None:
             return self._custom_providers
@@ -368,7 +373,11 @@ class AppManager:
             )
 
             desktop_path, icon_path = integrate_app(
-                record, metadata, self.paths, refresh_cache=self.refresh_desktop
+                record,
+                metadata,
+                self.paths,
+                refresh_cache=self.refresh_desktop,
+                icons_dir=self.icons_dir,
             )
             record.desktop_file = str(desktop_path)
             record.icon_path = str(icon_path) if icon_path else ""
@@ -636,7 +645,11 @@ class AppManager:
             record.last_checked_at = now
 
             desktop_path, icon_path = integrate_app(
-                record, metadata, self.paths, refresh_cache=self.refresh_desktop
+                record,
+                metadata,
+                self.paths,
+                refresh_cache=self.refresh_desktop,
+                icons_dir=self.icons_dir,
             )
             record.desktop_file = str(desktop_path)
             if icon_path:
@@ -693,7 +706,11 @@ class AppManager:
             if cand.is_file():
                 record.exec_path = str(cand)
         desktop_path, icon_path = integrate_app(
-            record, metadata, self.paths, refresh_cache=self.refresh_desktop
+            record,
+            metadata,
+            self.paths,
+            refresh_cache=self.refresh_desktop,
+            icons_dir=self.icons_dir,
         )
         record.desktop_file = str(desktop_path)
         if icon_path:
@@ -783,7 +800,11 @@ class AppManager:
             metadata.icon_ext = ""
 
         desktop_path, icon_path = integrate_app(
-            record, metadata, self.paths, refresh_cache=self.refresh_desktop
+            record,
+            metadata,
+            self.paths,
+            refresh_cache=self.refresh_desktop,
+            icons_dir=self.icons_dir,
         )
         record.desktop_file = str(desktop_path)
         if icon_path:
@@ -797,7 +818,12 @@ class AppManager:
         if not record:
             raise AppimaError(f"App not found: {app_id}")
 
-        remove_integration(record, self.paths, refresh_cache=self.refresh_desktop)
+        remove_integration(
+            record,
+            self.paths,
+            refresh_cache=self.refresh_desktop,
+            icons_dir=self.icons_dir,
+        )
 
         install_path = Path(record.install_path)
         try:
@@ -906,7 +932,11 @@ class AppManager:
         )
 
         desktop_path, icon_path = integrate_app(
-            record, metadata, self.paths, refresh_cache=self.refresh_desktop
+            record,
+            metadata,
+            self.paths,
+            refresh_cache=self.refresh_desktop,
+            icons_dir=self.icons_dir,
         )
         record.desktop_file = str(desktop_path)
         record.icon_path = str(icon_path) if icon_path else ""

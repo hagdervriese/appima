@@ -82,10 +82,10 @@ jobs:
               env["XDG_DATA_HOME"] = str(root / "data")
               env["XDG_CACHE_HOME"] = str(root / "cache")
               subprocess.run([str(appimage_bin), "--appimage-extract-and-run", "config", "--apps-dir", str(root / "Apps")], env=env, check=True)
-              # Install appima AppImage itself into the temp env and confirm its SVG icon is extracted!
+              # Install appima AppImage itself into the temp env and confirm its SVG icon is extracted into Apps/.icons!
               subprocess.run([str(appimage_bin), "--appimage-extract-and-run", "install", "--force", str(appimage_bin)], env=env, check=True)
-              icons = list((root / "data/appima/icons").glob("*"))
-              assert icons and icons[0].stat().st_size > 100, f"Expected extracted icon, got {icons}"
+              icons = list((root / "Apps/.icons").glob("*"))
+              assert icons and icons[0].stat().st_size > 100, f"Expected extracted icon in Apps/.icons, got {icons}"
               desktops = list((root / "data/applications").glob("appima-*.desktop"))
               assert desktops, "Missing desktop entry"
               txt = desktops[0].read_text(encoding="utf-8")

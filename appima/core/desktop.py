@@ -129,22 +129,41 @@ def integrate_app(
     metadata: ExtractedMetadata,
     paths: AppimaPaths,
     refresh_cache: bool = True,
+    icons_dir: Path | None = None,
 ) -> tuple[Path, Path | None]:
-    """Write icon and managed .desktop file, returning (desktop_path, icon_path)."""
+    """Write icon into icons_dir (default: <apps_dir>/.icons) and managed .desktop file."""
+    target_icons_dir = icons_dir or paths.icons_dir
     paths.applications_dir.mkdir(parents=True, exist_ok=True)
-    paths.icons_dir.mkdir(parents=True, exist_ok=True)
+    target_icons_dir.mkdir(parents=True, exist_ok=True)
 
     # Save extracted icon if provided, or keep existing icon on re-integration
     icon_path: Path | None = None
     if metadata.icon_bytes and metadata.icon_ext:
         ext = metadata.icon_ext.lstrip(".").lower()
-        # Clean up any previous icon with a different extension
-        for old in paths.icons_dir.glob(f"{record.id}.*"):
+        # Clean up any previous icon with a different extension (in both current and legacy dirs)
+        for old in target_icons_dir.glob(f"{record.id}.*"):
             old.unlink(missing_ok=True)
-        icon_path = paths.icons_dir / f"{record.id}.{ext}"
+        if target_icons_dir.resolve() != paths.icons_dir.resolve() and paths.icons_dir.is_dir():
+            for legacy in paths.icons_dir.glob(f"{record.id}.*"):
+                legacy.unlink(missing_ok=True)
+        icon_path = target_icons_dir / f"{record.id}.{ext}"
         icon_path.write_bytes(metadata.icon_bytes)
     elif record.icon_path and Path(record.icon_path).exists():
-        icon_path = Path(record.icon_path)
+        existing_icon = Path(record.icon_path)
+        # If migrating a legacy icon from ~/.local/share/appima/icons to <apps_dir>/.icons, move it cleanly
+        try:
+            if (
+                existing_icon.resolve().parent == paths.icons_dir.resolve()
+                and target_icons_dir.resolve() != paths.icons_dir.resolve()
+            ):
+                migrated = target_icons_dir / existing_icon.name
+                shutil.copy2(existing_icon, migrated)
+                existing_icon.unlink(missing_ok=True)
+                icon_path = migrated
+            else:
+                icon_path = existing_icon
+        except OSError:
+            icon_path = existing_icon
 
     desktop_path = paths.applications_dir / f"appima-{record.id}.desktop"
 
@@ -220,6 +239,7 @@ def remove_integration(
     record: AppRecord,
     paths: AppimaPaths,
     refresh_cache: bool = True,
+    icons_dir: Path | None = None,
 ) -> None:
     """Safely remove managed .desktop file and extracted icon."""
     if record.desktop_file:
@@ -235,10 +255,12 @@ def remove_integration(
 
     if record.icon_path:
         icon_path = Path(record.icon_path)
+        allowed_roots = [paths.icons_dir.resolve()]
+        if icons_dir is not None:
+            allowed_roots.append(icons_dir.resolve())
         try:
             icon_resolved = icon_path.resolve()
-            icons_root = paths.icons_dir.resolve()
-            if icon_resolved.parent == icons_root:
+            if icon_resolved.parent in allowed_roots or icon_resolved.parent.name == ".icons":
                 icon_path.unlink(missing_ok=True)
         except OSError:
             pass
@@ -556,6 +578,7 @@ def plan_conflict_removal(
         safe_icon_roots = [
             (home / ".local" / "share" / "icons").resolve(),
             (home / ".local" / "share" / "pixmaps").resolve(),
+            (apps_dir.expanduser() / ".icons").resolve(),
             paths.icons_dir.resolve(),
         ]
 

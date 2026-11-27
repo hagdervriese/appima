@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import stat
+import struct
 import tarfile
 import tempfile
 import zipfile
@@ -362,6 +363,17 @@ def inspect_portable_directory(
         except OSError:
             pass
 
+    # 6. Electron fallback: inspect resources/app.asar for an embedded app icon
+    if not icon_bytes:
+        asar_bytes, asar_ext = _extract_icon_from_electron_asar(
+            content_root,
+            name_hint=name or fallback_name,
+            exec_stem=Path(exec_relpath).stem if exec_relpath else "",
+        )
+        if asar_bytes and asar_ext:
+            icon_bytes = asar_bytes
+            icon_ext = asar_ext
+
     return ExtractedMetadata(
         name=name or fallback_name,
         comment=comment,
@@ -478,6 +490,111 @@ def _find_best_icon(
         return None
     candidates.sort(key=lambda item: (-item[0], -item[1], item[2].name))
     return candidates[0][2]
+
+
+def _extract_icon_from_electron_asar(
+    content_root: Path,
+    name_hint: str = "",
+    exec_stem: str = "",
+) -> tuple[bytes | None, str]:
+    """Read an app icon from Electron's resources/app.asar using pure stdlib."""
+    asar_path = content_root / "resources" / "app.asar"
+    if not asar_path.is_file():
+        return None, ""
+
+    icon_exts = (".svg", ".png", ".ico")
+    hints = {
+        re.sub(r"[^a-z0-9]+", "", h.lower())
+        for h in (name_hint, exec_stem)
+        if h
+    }
+
+    try:
+        file_size = asar_path.stat().st_size
+        with asar_path.open("rb") as fh:
+            hdr = fh.read(16)
+            if len(hdr) < 16:
+                return None, ""
+            header_size = struct.unpack("<I", hdr[4:8])[0]
+            str_len = struct.unpack("<I", hdr[12:16])[0]
+            data_base = 8 + header_size
+            if str_len <= 0 or str_len > 32 * 1024 * 1024 or data_base >= file_size:
+                return None, ""
+            meta = json.loads(fh.read(str_len).decode("utf-8"))
+            if not isinstance(meta, dict):
+                return None, ""
+
+            candidates: list[tuple[int, int, str, dict[str, object]]] = []
+
+            def walk(node: dict[str, object], prefix: str = "") -> None:
+                files = node.get("files")
+                if not isinstance(files, dict):
+                    return
+                for fname, entry in files.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    rel = f"{prefix}/{fname}" if prefix else fname
+                    low_rel = rel.lower()
+                    if "files" in entry:
+                        # Skip third-party npm dependencies to avoid picking library icons
+                        if fname.lower() == "node_modules":
+                            continue
+                        walk(entry, rel)
+                        continue
+                    low_name = fname.lower()
+                    if not any(low_name.endswith(ext) for ext in icon_exts):
+                        continue
+                    size_val = entry.get("size", 0)
+                    if not isinstance(size_val, int) or size_val <= 0 or size_val > 10 * 1024 * 1024:
+                        continue
+
+                    depth = rel.count("/")
+                    stem_norm = re.sub(r"[^a-z0-9]+", "", Path(fname).stem.lower())
+                    score = max(0, 40 - depth * 8)
+                    if stem_norm in ("icon", "appicon", "logo"):
+                        score += 70
+                    if any(h and (stem_norm == h or h in stem_norm) for h in hints):
+                        score += 80
+                    if "icon" in low_rel or "logo" in low_rel:
+                        score += 20
+                    if "tray" in low_rel or "template" in low_name or "badge" in low_name:
+                        score -= 40
+                    if low_name.endswith(".svg"):
+                        score += 12
+                    elif low_name.endswith(".png"):
+                        score += 10
+                    candidates.append((score, size_val, rel, entry))
+
+            walk(meta)
+            if not candidates:
+                return None, ""
+
+            candidates.sort(key=lambda item: (-item[0], -item[1], item[2]))
+            for _, size_val, rel, entry in candidates[:5]:
+                raw: bytes | None = None
+                if entry.get("unpacked"):
+                    unpacked = content_root / "resources" / "app.asar.unpacked" / rel
+                    if unpacked.is_file():
+                        raw = unpacked.read_bytes()
+                else:
+                    off_str = entry.get("offset")
+                    if off_str is None:
+                        continue
+                    offset = int(str(off_str))
+                    abs_off = data_base + offset
+                    if abs_off < data_base or abs_off + size_val > file_size:
+                        continue
+                    fh.seek(abs_off)
+                    raw = fh.read(size_val)
+
+                if raw:
+                    ext = _detect_icon_extension(raw, Path(rel).suffix)
+                    if ext:
+                        return raw, ext
+    except (OSError, ValueError, struct.error, json.JSONDecodeError):
+        return None, ""
+
+    return None, ""
 
 
 class ArchiveFormat(PackageFormat):
