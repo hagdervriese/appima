@@ -11,6 +11,7 @@ from appima.core.models import (
     IntegrationError,
     ProviderError,
     ReleaseInfo,
+    RemovalPlan,
     UpdateCheckResult,
 )
 
@@ -25,5 +26,6 @@ __all__ = [
     "IntegrationError",
     "ProviderError",
     "ReleaseInfo",
+    "RemovalPlan",
     "UpdateCheckResult",
 ]

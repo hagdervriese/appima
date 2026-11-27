@@ -556,6 +556,8 @@ class MainWindow(QMainWindow):
                     parent=self,
                 )
                 if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.chosen_name:
+                    if dlg.removed_any:
+                        self.refresh_apps()
                     continue
                 custom_name = dlg.chosen_name
                 reserved_names.add(custom_name.strip().lower())

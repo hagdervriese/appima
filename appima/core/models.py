@@ -178,6 +178,23 @@ class DesktopConflict:
     name: str
     desktop_path: str
     exec_cmd: str = ""
+    icon_value: str = ""
     source_kind: str = "System"
     similarity: float = 1.0
     is_appima_managed: bool = False
+    managed_app_id: str = ""
+    flatpak_id: str = ""
+
+
+@dataclass
+class RemovalPlan:
+    """Transparent plan describing how an existing conflicting entry can be removed."""
+
+    can_remove: bool
+    method: str  # "appima", "flatpak", "local_files", "unsupported"
+    summary: str
+    paths_to_delete: list[Path] = field(default_factory=list)
+    flatpak_id: str = ""
+    flatpak_scope: str = "--user"
+    managed_app_id: str = ""
+    reason: str = ""

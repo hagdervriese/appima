@@ -17,6 +17,7 @@ from appima.core.models import (
     DesktopConflict,
     ExtractedMetadata,
     IntegrationError,
+    RemovalPlan,
 )
 from appima.core.runtime import clean_subprocess_env
 
@@ -399,14 +400,21 @@ def find_existing_desktop_entries(
 
             score = _name_similarity(app_name, entry_name)
             if score >= threshold:
+                origin = _classify_desktop_origin(desktop_file, is_managed)
+                flatpak_id = entry.get("X-Flatpak", "").strip()
+                if not flatpak_id and origin == "Flatpak":
+                    flatpak_id = desktop_file.stem
                 conflicts.append(
                     DesktopConflict(
                         name=entry_name,
                         desktop_path=str(desktop_file),
                         exec_cmd=entry.get("Exec", "").strip(),
-                        source_kind=_classify_desktop_origin(desktop_file, is_managed),
+                        icon_value=entry.get("Icon", "").strip(),
+                        source_kind=origin,
                         similarity=score,
                         is_appima_managed=is_managed,
+                        managed_app_id=managed_id if is_managed else "",
+                        flatpak_id=flatpak_id,
                     )
                 )
 
@@ -455,3 +463,196 @@ def suggest_unique_app_name(
         if not has_exact_desktop_name_conflict(cand, paths, search_dirs=search_dirs):
             return cand
     return f"{clean_base} (New)"
+
+
+def _extract_exec_binary(exec_cmd: str) -> Path | None:
+    """Parse the primary executable path from an XDG Exec= line."""
+    if not exec_cmd.strip():
+        return None
+    try:
+        tokens = shlex.split(exec_cmd.strip())
+    except ValueError:
+        tokens = exec_cmd.strip().split()
+    if not tokens:
+        return None
+
+    idx = 0
+    if tokens[0] in ("env", "/usr/bin/env"):
+        idx = 1
+        while idx < len(tokens) and "=" in tokens[idx]:
+            idx += 1
+    if idx >= len(tokens):
+        return None
+
+    raw_cmd = tokens[idx]
+    if raw_cmd.startswith(("/", "~")):
+        return Path(raw_cmd).expanduser()
+    return None
+
+
+def _is_under(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def plan_conflict_removal(
+    conflict: DesktopConflict,
+    paths: AppimaPaths,
+    apps_dir: Path,
+    home_dir: Path | None = None,
+) -> RemovalPlan:
+    """Build a safe, explicit removal plan for a conflicting desktop entry."""
+    home = (home_dir or Path.home()).resolve()
+    desktop_file = Path(conflict.desktop_path)
+
+    # 1. Managed by appima itself
+    if conflict.is_appima_managed and conflict.managed_app_id:
+        return RemovalPlan(
+            can_remove=True,
+            method="appima",
+            summary=f"Uninstall appima-managed app \"{conflict.name}\"",
+            managed_app_id=conflict.managed_app_id,
+        )
+
+    # 2. Flatpak app
+    if conflict.source_kind == "Flatpak" and conflict.flatpak_id:
+        if not shutil.which("flatpak"):
+            return RemovalPlan(
+                can_remove=False,
+                method="unsupported",
+                summary="",
+                reason="The 'flatpak' command is not available on this system.",
+            )
+        scope = "--user" if _is_under(desktop_file, home) else "--system"
+        return RemovalPlan(
+            can_remove=True,
+            method="flatpak",
+            summary=f"Uninstall Flatpak \"{conflict.name}\" ({conflict.flatpak_id}, {scope})",
+            flatpak_id=conflict.flatpak_id,
+            flatpak_scope=scope,
+        )
+
+    # 3. Local user-space sideloaded .desktop entry
+    if conflict.source_kind == "Local user entry" and _is_under(desktop_file, home):
+        to_delete: list[Path] = []
+        if desktop_file.is_file() and desktop_file.suffix == ".desktop":
+            to_delete.append(desktop_file)
+
+        # Dedicated portable app parent roots where a single child folder can be removed safely
+        safe_app_roots = [
+            apps_dir.expanduser().resolve(),
+            (home / "Apps").resolve(),
+            (home / "Applications").resolve(),
+            (home / ".local" / "opt").resolve(),
+            (home / "opt").resolve(),
+        ]
+        safe_bin_dirs = [
+            (home / ".local" / "bin").resolve(),
+            (home / "bin").resolve(),
+        ]
+        safe_icon_roots = [
+            (home / ".local" / "share" / "icons").resolve(),
+            (home / ".local" / "share" / "pixmaps").resolve(),
+            paths.icons_dir.resolve(),
+        ]
+
+        exec_bin = _extract_exec_binary(conflict.exec_cmd)
+        if exec_bin and exec_bin.exists() and _is_under(exec_bin, home):
+            exec_resolved = exec_bin.resolve()
+            added_exec = False
+            # Case A: executable lives inside a dedicated subfolder of ~/Apps, ~/Applications, ~/.local/opt, ~/opt
+            for app_root in safe_app_roots:
+                if _is_under(exec_resolved, app_root) and exec_resolved != app_root:
+                    rel = exec_resolved.relative_to(app_root)
+                    top_entry = app_root / rel.parts[0]
+                    if top_entry.is_dir():
+                        to_delete.append(top_entry)
+                        added_exec = True
+                        break
+                    if top_entry.is_file() and top_entry.suffix.lower() == ".appimage":
+                        to_delete.append(top_entry)
+                        added_exec = True
+                        break
+            # Case B: standalone .AppImage file anywhere inside home
+            if not added_exec and exec_resolved.is_file() and exec_resolved.suffix.lower() == ".appimage":
+                to_delete.append(exec_resolved)
+                added_exec = True
+            # Case C: single binary directly inside ~/.local/bin or ~/bin (never delete bin/ itself)
+            if not added_exec and exec_resolved.is_file():
+                for bin_dir in safe_bin_dirs:
+                    if exec_resolved.parent == bin_dir:
+                        to_delete.append(exec_resolved)
+                        break
+
+        # Remove user icon file if it's an absolute path inside user icon directories
+        if conflict.icon_value.startswith(("/", "~")):
+            icon_p = Path(conflict.icon_value).expanduser()
+            if icon_p.is_file() and _is_under(icon_p, home):
+                if any(_is_under(icon_p, r) for r in safe_icon_roots):
+                    if icon_p not in to_delete:
+                        to_delete.append(icon_p)
+
+        if to_delete:
+            return RemovalPlan(
+                can_remove=True,
+                method="local_files",
+                summary=f"Remove obsolete local entry \"{conflict.name}\"",
+                paths_to_delete=to_delete,
+            )
+
+    # 4. System / immutable / Snap entries
+    return RemovalPlan(
+        can_remove=False,
+        method="unsupported",
+        summary="",
+        reason=(
+            f"{conflict.source_kind} entries ({conflict.desktop_path}) are managed by "
+            "the operating system and cannot be removed by appima."
+        ),
+    )
+
+
+def execute_local_removal_plan(
+    plan: RemovalPlan,
+    paths: AppimaPaths,
+    refresh_cache: bool = True,
+) -> None:
+    """Execute a 'local_files' or 'flatpak' RemovalPlan safely."""
+    if not plan.can_remove:
+        raise IntegrationError(plan.reason or "This entry cannot be removed by appima.")
+
+    if plan.method == "flatpak":
+        flatpak_bin = shutil.which("flatpak")
+        if not flatpak_bin:
+            raise IntegrationError("The 'flatpak' command is not installed.")
+        proc = subprocess.run(
+            [flatpak_bin, "uninstall", plan.flatpak_scope, "-y", plan.flatpak_id],
+            capture_output=True,
+            text=True,
+            env=clean_subprocess_env(),
+            timeout=120,
+            check=False,
+        )
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout).strip()
+            raise IntegrationError(
+                f"Flatpak uninstall failed ({plan.flatpak_id}): {err or 'permission denied'}"
+            )
+        if refresh_cache:
+            refresh_desktop_caches(paths)
+        return
+
+    if plan.method == "local_files":
+        for target in plan.paths_to_delete:
+            if target.is_dir():
+                shutil.rmtree(target)
+            elif target.exists() or target.is_symlink():
+                target.unlink(missing_ok=True)
+        if refresh_cache:
+            refresh_desktop_caches(paths)
+        return
+
+    raise IntegrationError(f"Unsupported removal method: {plan.method}")

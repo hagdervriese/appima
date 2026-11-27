@@ -12,9 +12,11 @@ from appima.core.checksum import compute_file_hash, verify_file_hash
 from appima.core.config import AppimaPaths, load_config, save_config
 from appima.core.database import Database
 from appima.core.desktop import (
+    execute_local_removal_plan,
     find_existing_desktop_entries,
     has_exact_desktop_name_conflict,
     integrate_app,
+    plan_conflict_removal,
     remove_integration,
     suggest_unique_app_name,
 )
@@ -29,6 +31,7 @@ from appima.core.models import (
     FormatError,
     ProviderError,
     ReleaseInfo,
+    RemovalPlan,
     UpdateCheckResult,
 )
 from appima.core.runtime import (
@@ -198,6 +201,38 @@ class AppManager:
         return suggest_unique_app_name(
             base_name, version, self.paths, search_dirs=search_dirs
         )
+
+    def plan_conflict_removal(
+        self,
+        conflict: DesktopConflict,
+        home_dir: Path | None = None,
+    ) -> RemovalPlan:
+        """Return a transparent removal plan for an existing conflicting app."""
+        return plan_conflict_removal(
+            conflict,
+            self.paths,
+            self.config.apps_dir,
+            home_dir=home_dir,
+        )
+
+    def remove_conflict(
+        self,
+        conflict: DesktopConflict,
+        home_dir: Path | None = None,
+    ) -> RemovalPlan:
+        """Remove an existing conflicting app (appima-managed, Flatpak, or local entry)."""
+        plan = self.plan_conflict_removal(conflict, home_dir=home_dir)
+        if not plan.can_remove:
+            raise AppimaError(
+                plan.reason or "This entry cannot be removed automatically by appima."
+            )
+        if plan.method == "appima" and plan.managed_app_id:
+            self.uninstall_app(plan.managed_app_id)
+            return plan
+        execute_local_removal_plan(
+            plan, self.paths, refresh_cache=self.refresh_desktop
+        )
+        return plan
 
     def install_app(
         self,

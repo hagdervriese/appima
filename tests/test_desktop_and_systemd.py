@@ -10,9 +10,11 @@ from appima.core.config import AppimaPaths
 from appima.core.desktop import (
     MANAGED_MARKER_KEY,
     build_exec_line,
+    execute_local_removal_plan,
     find_existing_desktop_entries,
     has_exact_desktop_name_conflict,
     integrate_app,
+    plan_conflict_removal,
     remove_integration,
     suggest_unique_app_name,
 )
@@ -188,6 +190,86 @@ class DesktopAndSystemdTests(unittest.TestCase):
                 suggest_unique_app_name("Obsidian", "1.8.0", paths, search_dirs=dirs),
                 "Obsidian (1.8.0)",
             )
+
+    def test_conflict_removal_plan_and_safety_guards(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            apps_dir = home / "Apps"
+            user_apps_desktop = home / ".local" / "share" / "applications"
+            user_icons = home / ".local" / "share" / "icons"
+            docs_dir = home / "Documents"
+            sys_desktop = root / "usr" / "share" / "applications"
+            for d in (apps_dir, user_apps_desktop, user_icons, docs_dir, sys_desktop):
+                d.mkdir(parents=True)
+
+            paths = _temp_paths(home / ".local")
+            paths = AppimaPaths(
+                config_dir=home / ".config" / "appima",
+                data_dir=home / ".local" / "share" / "appima",
+                cache_dir=home / ".cache" / "appima",
+                applications_dir=user_apps_desktop,
+                systemd_user_dir=home / ".config" / "systemd" / "user",
+            )
+            paths.ensure_dirs()
+
+            # 1. Obsolete local sideloaded AppImage + icon + .desktop -> all 3 removed cleanly
+            old_bin = apps_dir / "OldTool-0.9.AppImage"
+            old_bin.write_bytes(b"\x7fELF" + b"\x00" * 64)
+            old_icon = user_icons / "oldtool.png"
+            old_icon.write_bytes(b"\x89PNG\r\n\x1a\n")
+            old_desktop = user_apps_desktop / "oldtool.desktop"
+            old_desktop.write_text(
+                f"[Desktop Entry]\nType=Application\nName=OldTool\nExec={old_bin} %U\nIcon={old_icon}\n",
+                encoding="utf-8",
+            )
+
+            conflicts = find_existing_desktop_entries(
+                "OldTool", paths, search_dirs=[user_apps_desktop, sys_desktop]
+            )
+            self.assertEqual(len(conflicts), 1)
+            # Mark as local user entry since tmp home != real Path.home()
+            conflicts[0].source_kind = "Local user entry"
+            plan = plan_conflict_removal(conflicts[0], paths, apps_dir, home_dir=home)
+            self.assertTrue(plan.can_remove)
+            self.assertEqual(plan.method, "local_files")
+            self.assertIn(old_desktop, plan.paths_to_delete)
+            self.assertIn(old_bin.resolve(), plan.paths_to_delete)
+            self.assertIn(old_icon, plan.paths_to_delete)
+
+            execute_local_removal_plan(plan, paths, refresh_cache=False)
+            self.assertFalse(old_desktop.exists())
+            self.assertFalse(old_bin.exists())
+            self.assertFalse(old_icon.exists())
+
+            # 2. Safety guard: local .desktop pointing to a non-AppImage file in ~/Documents
+            # must ONLY delete the .desktop file, NEVER touch ~/Documents!
+            doc_script = docs_dir / "myscript.sh"
+            doc_script.write_text("#!/bin/sh\n", encoding="utf-8")
+            doc_desktop = user_apps_desktop / "docscript.desktop"
+            doc_desktop.write_text(
+                f"[Desktop Entry]\nType=Application\nName=MyScript\nExec={doc_script}\n",
+                encoding="utf-8",
+            )
+            c2 = find_existing_desktop_entries(
+                "MyScript", paths, search_dirs=[user_apps_desktop]
+            )[0]
+            c2.source_kind = "Local user entry"
+            plan2 = plan_conflict_removal(c2, paths, apps_dir, home_dir=home)
+            self.assertEqual(plan2.paths_to_delete, [doc_desktop])
+
+            # 3. System entry in /usr/share/applications -> cannot be removed
+            sys_file = sys_desktop / "sysapp.desktop"
+            sys_file.write_text(
+                "[Desktop Entry]\nType=Application\nName=SysApp\nExec=/usr/bin/sysapp\n",
+                encoding="utf-8",
+            )
+            c3 = find_existing_desktop_entries(
+                "SysApp", paths, search_dirs=[sys_desktop]
+            )[0]
+            plan3 = plan_conflict_removal(c3, paths, apps_dir, home_dir=home)
+            self.assertFalse(plan3.can_remove)
+            self.assertEqual(plan3.method, "unsupported")
 
 
 if __name__ == "__main__":
