@@ -14,6 +14,7 @@ from appima.core.desktop import (
     remove_integration,
 )
 from appima.core.models import AppRecord, ExtractedMetadata
+from appima.formats.appimage import AppImageFormat
 from appima.service.systemd import SERVICE_NAME, TIMER_NAME, sync_update_timer
 
 
@@ -107,6 +108,31 @@ class DesktopAndSystemdTests(unittest.TestCase):
             self.assertTrue(ok_off)
             self.assertFalse(timer_file.exists())
             self.assertFalse(service_file.exists())
+
+    def test_icon_ranking_prefers_desktop_hint_and_supports_0x0_and_pixmaps(self) -> None:
+        entries = [
+            "other.png",
+            "usr/share/icons/hicolor/0x0/apps/my-electron-app.png",
+            "usr/share/icons/hicolor/512x512/apps/my-electron-app.png",
+            "usr/share/pixmaps/fallback.png",
+            ".DirIcon",
+        ]
+        ranked = AppImageFormat._rank_icon_candidates(entries, "my-electron-app")
+        self.assertEqual(
+            ranked[0], "usr/share/icons/hicolor/512x512/apps/my-electron-app.png"
+        )
+        self.assertEqual(
+            ranked[1], "usr/share/icons/hicolor/0x0/apps/my-electron-app.png"
+        )
+
+        # Electron app with ONLY 0x0 icon and no .DirIcon
+        electron_only = [
+            "usr/share/icons/hicolor/0x0/apps/coolapp.png",
+        ]
+        self.assertEqual(
+            AppImageFormat._rank_icon_candidates(electron_only, ""),
+            ["usr/share/icons/hicolor/0x0/apps/coolapp.png"],
+        )
 
 
 if __name__ == "__main__":

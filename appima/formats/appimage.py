@@ -186,78 +186,78 @@ class AppImageFormat(PackageFormat):
         ]
         if not desktop_candidates:
             desktop_candidates = [
-                e for e in entries if e.startswith("usr/share/applications/") and e.endswith(".desktop")
+                e
+                for e in entries
+                if e.startswith("usr/share/applications/") and e.endswith(".desktop")
             ]
-
-        icon_candidates: list[str] = []
-        if ".DirIcon" in entries:
-            icon_candidates.append(".DirIcon")
-        # Top-level icons
-        for ext in (".svg", ".png", ".xpm"):
-            icon_candidates.extend(
-                e for e in entries if "/" not in e and e.lower().endswith(ext)
-            )
-        # Standard hicolor icons inside usr/share/icons
-        for size_pref in ("scalable", "512x512", "256x256", "128x128", "64x64"):
-            for e in entries:
-                if (
-                    e.startswith(f"usr/share/icons/hicolor/{size_pref}/apps/")
-                    and e.lower().endswith((".svg", ".png"))
-                ):
-                    icon_candidates.append(e)
-
-        targets_to_extract: list[str] = []
-        if desktop_candidates:
-            targets_to_extract.append(desktop_candidates[0])
-        # Extract up to 3 top icon candidates
-        for cand in icon_candidates[:3]:
-            if cand not in targets_to_extract:
-                targets_to_extract.append(cand)
-
-        if not targets_to_extract:
-            return ExtractedMetadata(name=fallback_name, version_hint=fallback_version)
 
         with tempfile.TemporaryDirectory(prefix="appima-inspect-") as tmp_str:
             tmp_dir = Path(tmp_str)
             extract_root = tmp_dir / "root"
-            subprocess.run(
-                [
-                    unsquashfs,
-                    "-o",
-                    str(offset),
-                    "-f",
-                    "-n",
-                    "-q",
-                    "-d",
-                    str(extract_root),
-                    str(path),
-                    *targets_to_extract,
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=20,
-                check=False,
-            )
 
+            # Step 1: Extract the .desktop file first so we can read its Icon= hint
             desktop_text = ""
             if desktop_candidates:
+                subprocess.run(
+                    [
+                        unsquashfs,
+                        "-o",
+                        str(offset),
+                        "-f",
+                        "-n",
+                        "-q",
+                        "-d",
+                        str(extract_root),
+                        str(path),
+                        desktop_candidates[0],
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=20,
+                    check=False,
+                )
                 df = extract_root / desktop_candidates[0]
                 if df.is_file():
                     desktop_text = df.read_text(encoding="utf-8", errors="replace")
 
+            parsed = parse_desktop_metadata(desktop_text) if desktop_text else {}
+            icon_hint = parsed.get("icon", "")
+
+            # Step 2: Rank icon candidates using the .desktop Icon= hint + standard AppImage paths
+            icon_candidates = self._rank_icon_candidates(entries, icon_hint)
+
             icon_bytes: bytes | None = None
             icon_ext = ""
-            for cand in icon_candidates[:3]:
-                cand_path = extract_root / cand
-                resolved_bytes, resolved_ext = self._read_extracted_icon(
-                    cand_path, extract_root, path, offset, unsquashfs
+            if icon_candidates:
+                batch = icon_candidates[:8]
+                subprocess.run(
+                    [
+                        unsquashfs,
+                        "-o",
+                        str(offset),
+                        "-f",
+                        "-n",
+                        "-q",
+                        "-d",
+                        str(extract_root),
+                        str(path),
+                        *batch,
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=20,
+                    check=False,
                 )
-                if resolved_bytes:
-                    icon_bytes = resolved_bytes
-                    icon_ext = resolved_ext
-                    break
+                for cand in batch:
+                    cand_path = extract_root / cand
+                    resolved_bytes, resolved_ext = self._read_extracted_icon(
+                        cand_path, extract_root, path, offset, unsquashfs
+                    )
+                    if resolved_bytes:
+                        icon_bytes = resolved_bytes
+                        icon_ext = resolved_ext
+                        break
 
-        parsed = parse_desktop_metadata(desktop_text) if desktop_text else {}
         return ExtractedMetadata(
             name=parsed.get("name") or fallback_name,
             comment=parsed.get("comment", ""),
@@ -271,6 +271,105 @@ class AppImageFormat(PackageFormat):
             version_hint=parsed.get("version") or fallback_version,
         )
 
+    @staticmethod
+    def _rank_icon_candidates(entries: list[str], icon_hint: str) -> list[str]:
+        """Return ordered icon paths inside SquashFS from best to fallback."""
+        icon_exts = (".svg", ".png", ".xpm", ".ico")
+        hint_stem = Path(icon_hint).stem.lower() if icon_hint else ""
+        size_order = (
+            "scalable",
+            "1024x1024",
+            "512x512",
+            "256x256",
+            "128x128",
+            "0x0",
+            "96x96",
+            "64x64",
+            "48x48",
+        )
+
+        ranked: list[str] = []
+
+        def add_unique(items: list[str]) -> None:
+            for item in items:
+                if item not in ranked:
+                    ranked.append(item)
+
+        # 1. Exact matches for the .desktop Icon= name (highest resolution / SVG first)
+        if hint_stem:
+            for size_dir in size_order:
+                for ext in (".svg", ".png"):
+                    add_unique(
+                        [
+                            e
+                            for e in entries
+                            if f"/hicolor/{size_dir}/apps/" in f"/{e}"
+                            and Path(e).stem.lower() == hint_stem
+                            and e.lower().endswith(ext)
+                        ]
+                    )
+            # Top-level or pixmaps match for Icon= name
+            for ext in icon_exts:
+                add_unique(
+                    [
+                        e
+                        for e in entries
+                        if "/" not in e
+                        and Path(e).stem.lower() == hint_stem
+                        and e.lower().endswith(ext)
+                    ]
+                )
+                add_unique(
+                    [
+                        e
+                        for e in entries
+                        if e.startswith("usr/share/pixmaps/")
+                        and Path(e).stem.lower() == hint_stem
+                        and e.lower().endswith(ext)
+                    ]
+                )
+                # Any other icon path matching the hint stem
+                add_unique(
+                    [
+                        e
+                        for e in entries
+                        if Path(e).stem.lower() == hint_stem
+                        and e.lower().endswith(ext)
+                    ]
+                )
+
+        # 2. Standard AppImage .DirIcon
+        if ".DirIcon" in entries:
+            add_unique([".DirIcon"])
+
+        # 3. Top-level icons
+        for ext in icon_exts:
+            add_unique([e for e in entries if "/" not in e and e.lower().endswith(ext)])
+
+        # 4. Any hicolor apps icons by descending size preference
+        for size_dir in size_order:
+            for ext in (".svg", ".png"):
+                add_unique(
+                    [
+                        e
+                        for e in entries
+                        if e.startswith(f"usr/share/icons/hicolor/{size_dir}/apps/")
+                        and e.lower().endswith(ext)
+                    ]
+                )
+
+        # 5. Any pixmaps icon
+        for ext in icon_exts:
+            add_unique(
+                [
+                    e
+                    for e in entries
+                    if e.startswith("usr/share/pixmaps/") and e.lower().endswith(ext)
+                ]
+            )
+
+        return ranked
+
     def _read_extracted_icon(
         self,
         cand_path: Path,
@@ -279,17 +378,28 @@ class AppImageFormat(PackageFormat):
         offset: int,
         unsquashfs: str,
     ) -> tuple[bytes | None, str]:
-        """Read an icon file, following symlinks inside the SquashFS if needed."""
-        if cand_path.is_symlink():
-            link_target = os.readlink(cand_path)
-            rel_target = Path(link_target.lstrip("/"))
-            target_on_disk = (cand_path.parent / rel_target).resolve()
-            try:
-                inner_rel = str(target_on_disk.relative_to(extract_root.resolve()))
-            except ValueError:
-                inner_rel = str(rel_target)
+        """Read an icon file, following multi-hop symlinks inside the SquashFS."""
+        root_resolved = extract_root.resolve()
+        current = cand_path
+        for _ in range(6):
+            if not current.is_symlink():
+                break
+            link_target = os.readlink(current)
+            if link_target.startswith("/"):
+                inner_rel = link_target.lstrip("/")
+            else:
+                # Resolve relative to current's directory inside extract_root
+                combined = os.path.normpath(
+                    os.path.join(str(current.parent), link_target)
+                )
+                try:
+                    inner_rel = str(Path(combined).relative_to(root_resolved))
+                except ValueError:
+                    inner_rel = link_target.lstrip("./")
 
-            if not target_on_disk.is_file():
+            inner_rel = inner_rel.lstrip("./")
+            target_path = extract_root / inner_rel
+            if not target_path.exists() and not target_path.is_symlink():
                 subprocess.run(
                     [
                         unsquashfs,
@@ -308,16 +418,16 @@ class AppImageFormat(PackageFormat):
                     timeout=15,
                     check=False,
                 )
-            cand_path = extract_root / inner_rel
+            current = target_path
 
-        if not cand_path.is_file():
+        if not current.is_file():
             return None, ""
 
-        data = cand_path.read_bytes()
+        data = current.read_bytes()
         if not data:
             return None, ""
 
-        ext = self._detect_icon_extension(data, cand_path.suffix)
+        ext = self._detect_icon_extension(data, current.suffix)
         return (data, ext) if ext else (None, "")
 
     @staticmethod

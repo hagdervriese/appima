@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from appima.core.manager import AppManager
-from appima.core.models import AppRecord, UpdateCheckResult
+from appima.core.models import AppimaError, AppRecord, UpdateCheckResult
 from appima.core.runtime import SELF_APP_ID
 from appima.gui.add_dialog import AddAppDialog
 from appima.gui.details_dialog import AppDetailsDialog
@@ -31,14 +31,14 @@ from appima.service.systemd import sync_update_timer
 class AppRowWidget(QFrame):
     """Single clean row representing one managed application."""
 
-    clicked = Signal(str)
+    details_requested = Signal(str)
     update_requested = Signal(str)
+    uninstall_requested = Signal(str)
 
     def __init__(self, record: AppRecord, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.record = record
         self.setObjectName("AppRow")
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setStyleSheet(
             """
             QFrame#AppRow {
@@ -54,7 +54,7 @@ class AppRowWidget(QFrame):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(14)
+        layout.setSpacing(10)
 
         # Icon
         icon_lbl = QLabel()
@@ -99,9 +99,6 @@ class AppRowWidget(QFrame):
                     padding: 6px 12px;
                     font-weight: 600;
                 }
-                QPushButton:hover {
-                    opacity: 0.9;
-                }
                 """
             )
             self.update_btn.clicked.connect(
@@ -109,10 +106,49 @@ class AppRowWidget(QFrame):
             )
             layout.addWidget(self.update_btn)
 
-    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        # Quiet single-home actions: Details and Uninstall
+        details_btn = QPushButton("Details")
+        details_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        details_btn.setFlat(True)
+        details_btn.setStyleSheet(
+            """
+            QPushButton {
+                padding: 6px 10px;
+                border-radius: 6px;
+            }
+            QPushButton:hover {
+                background: palette(alternate-base);
+            }
+            """
+        )
+        details_btn.clicked.connect(lambda: self.details_requested.emit(self.record.id))
+        layout.addWidget(details_btn)
+
+        uninstall_btn = QPushButton("Uninstall")
+        uninstall_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        uninstall_btn.setFlat(True)
+        uninstall_btn.setStyleSheet(
+            """
+            QPushButton {
+                padding: 6px 10px;
+                border-radius: 6px;
+                color: palette(placeholder-text);
+            }
+            QPushButton:hover {
+                color: #e74c3c;
+                background: palette(alternate-base);
+            }
+            """
+        )
+        uninstall_btn.clicked.connect(
+            lambda: self.uninstall_requested.emit(self.record.id)
+        )
+        layout.addWidget(uninstall_btn)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit(self.record.id)
-        super().mousePressEvent(event)
+            self.details_requested.emit(self.record.id)
+        super().mouseDoubleClickEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -251,8 +287,9 @@ class MainWindow(QMainWindow):
         else:
             for idx, rec in enumerate(apps):
                 row = AppRowWidget(rec, parent=self.list_container)
-                row.clicked.connect(self._open_details)
+                row.details_requested.connect(self._open_details)
                 row.update_requested.connect(self._start_update)
+                row.uninstall_requested.connect(self._confirm_uninstall)
                 self.list_layout.insertWidget(idx, row)
 
         # Offer one-click self-integration when running as an unintegrated AppImage
@@ -295,6 +332,30 @@ class MainWindow(QMainWindow):
         dialog = AppDetailsDialog(self.manager, record, parent=self)
         if dialog.exec() == AppDetailsDialog.DialogCode.Accepted and dialog.changed:
             self.refresh_apps()
+
+    def _confirm_uninstall(self, app_id: str) -> None:
+        record = self.manager.get_app(app_id)
+        if not record:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Uninstall app",
+            f"Remove {record.name}?\n\n"
+            f"This deletes:\n"
+            f"• {record.install_path}\n"
+            f"• Its desktop launcher entry and icon",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.manager.uninstall_app(app_id)
+        except AppimaError as exc:
+            QMessageBox.critical(self, "Uninstall failed", str(exc))
+            return
+        self.refresh_apps()
+        self.footer_label.setText(f"Uninstalled {record.name}.")
 
     def _open_settings(self) -> None:
         dialog = SettingsDialog(self.manager, parent=self)

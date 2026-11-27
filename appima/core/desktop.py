@@ -86,6 +86,7 @@ def parse_desktop_metadata(desktop_text: str) -> dict[str, str]:
         "name": section.get("Name", "").strip(),
         "comment": section.get("Comment", "").strip(),
         "categories": section.get("Categories", "").strip(),
+        "icon": section.get("Icon", "").strip(),
         "mime_types": section.get("MimeType", "").strip(),
         "wm_class": section.get("StartupWMClass", "").strip(),
         "terminal": section.get("Terminal", "false").strip().lower(),

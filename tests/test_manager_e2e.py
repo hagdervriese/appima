@@ -148,13 +148,28 @@ class ManagerEndToEndTests(unittest.TestCase):
                     Path(original_path).read_bytes(), _fake_appimage_bytes(b"v1")
                 )
 
-                # Launch settings update refreshes .desktop file
+                # Launch settings + custom icon update refreshes .desktop file and preserves custom icon
+                custom_icon = root / "my-icon.svg"
+                custom_icon.write_text(
+                    "<svg xmlns='http://www.w3.org/2000/svg'></svg>", encoding="utf-8"
+                )
                 edited = mgr.update_app_settings(
-                    rec.id, launch_args="--enable-wayland", env_vars="DEBUG=1"
+                    rec.id,
+                    launch_args="--enable-wayland",
+                    env_vars="DEBUG=1",
+                    custom_icon_file=custom_icon,
                 )
                 desktop_txt = Path(edited.desktop_file).read_text(encoding="utf-8")
                 self.assertIn("env DEBUG=1", desktop_txt)
                 self.assertIn("--enable-wayland", desktop_txt)
+                self.assertTrue(Path(edited.icon_path).is_file())
+                self.assertTrue(edited.icon_path.endswith(".svg"))
+                self.assertIn(f"Icon={edited.icon_path}", desktop_txt)
+
+                # Subsequent settings save without icon preserves the custom SVG icon
+                edited2 = mgr.update_app_settings(rec.id, name="Sample App Renamed")
+                self.assertEqual(edited2.icon_path, edited.icon_path)
+                self.assertTrue(Path(edited2.icon_path).is_file())
 
                 # Uninstall cleans up binary, desktop file, and DB row
                 desktop_path = Path(edited.desktop_file)

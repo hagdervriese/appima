@@ -516,8 +516,10 @@ class AppManager:
         env_vars: str | None = None,
         source_url: str | None = None,
         asset_pattern: str | None = None,
+        custom_icon_file: Path | str | None = None,
+        reextract_icon: bool = False,
     ) -> AppRecord:
-        """Update per-app metadata/launch options and refresh its .desktop entry."""
+        """Update per-app metadata/launch options/icon and refresh its .desktop entry."""
         record = self.db.get_app(app_id)
         if not record:
             raise AppimaError(f"App not found: {app_id}")
@@ -539,9 +541,18 @@ class AppManager:
         if asset_pattern is not None:
             record.asset_pattern = asset_pattern.strip()
 
-        return self.reintegrate_app(record)
+        return self.reintegrate_app(
+            record,
+            custom_icon_file=custom_icon_file,
+            reextract_icon=reextract_icon,
+        )
 
-    def reintegrate_app(self, app_or_id: AppRecord | str) -> AppRecord:
+    def reintegrate_app(
+        self,
+        app_or_id: AppRecord | str,
+        custom_icon_file: Path | str | None = None,
+        reextract_icon: bool = False,
+    ) -> AppRecord:
         """Re-extract metadata and rewrite the managed .desktop entry."""
         record = (
             self.db.get_app(app_or_id) if isinstance(app_or_id, str) else app_or_id
@@ -552,6 +563,23 @@ class AppManager:
         install_path = Path(record.install_path)
         fmt = self._format_by_id(record.format)
         metadata = fmt.inspect(install_path)
+
+        if custom_icon_file:
+            icon_src = Path(custom_icon_file).expanduser()
+            if not icon_src.is_file():
+                raise AppimaError(f"Icon file not found: {icon_src}")
+            ext = icon_src.suffix.lower().lstrip(".")
+            if ext not in ("png", "svg", "xpm", "ico", "webp"):
+                raise AppimaError(
+                    f"Unsupported icon format '.{ext}'. Use PNG, SVG, XPM, ICO, or WebP."
+                )
+            metadata.icon_bytes = icon_src.read_bytes()
+            metadata.icon_ext = ext
+        elif not reextract_icon and record.icon_path and Path(record.icon_path).is_file():
+            # Preserve an existing (possibly user-customized) icon unless re-extraction was requested
+            metadata.icon_bytes = None
+            metadata.icon_ext = ""
+
         desktop_path, icon_path = integrate_app(
             record, metadata, self.paths, refresh_cache=self.refresh_desktop
         )

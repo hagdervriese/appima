@@ -56,6 +56,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_uninstall = sub.add_parser("uninstall", help="Uninstall an app and remove its desktop entry")
     p_uninstall.add_argument("app_id", help="App ID to remove")
 
+    p_reintegrate = sub.add_parser(
+        "reintegrate", help="Refresh desktop entry and icon for an app (or --all)"
+    )
+    p_reintegrate.add_argument("app_id", nargs="?", default="", help="App ID to re-integrate")
+    p_reintegrate.add_argument("--all", action="store_true", help="Refresh all managed apps")
+    p_reintegrate.add_argument("--icon", default="", help="Optional custom icon file path")
+
     p_scan = sub.add_parser("scan", help="Find unmanaged AppImages inside your Apps folder")
     p_scan.add_argument("--adopt", action="store_true", help="Adopt all discovered AppImages")
 
@@ -193,6 +200,23 @@ def main(argv: Sequence[str] | None = None, manager: AppManager | None = None) -
         if args.command == "uninstall":
             mgr.uninstall_app(args.app_id)
             print(f"Uninstalled {args.app_id}")
+            return 0
+
+        if args.command == "reintegrate":
+            if args.all:
+                for app in mgr.list_apps():
+                    mgr.reintegrate_app(app.id, reextract_icon=True)
+                    print(f"Refreshed {app.name} ({app.id})")
+                return 0
+            if not args.app_id:
+                print("Specify an app ID or pass --all.", file=sys.stderr)
+                return 2
+            rec = mgr.reintegrate_app(
+                args.app_id,
+                custom_icon_file=args.icon or None,
+                reextract_icon=not bool(args.icon),
+            )
+            print(f"Refreshed {rec.name} → icon: {rec.icon_path or 'default'}")
             return 0
 
         if args.command == "scan":
