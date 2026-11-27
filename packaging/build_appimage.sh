@@ -31,6 +31,8 @@ python3 -m PyInstaller \
   --paths "${REPO_ROOT}" \
   --add-data "${REPO_ROOT}/appima/gui/assets:appima/gui/assets" \
   --collect-submodules appima \
+  --collect-data certifi \
+  --hidden-import certifi \
   --hidden-import PySide6.QtSvg \
   --exclude-module PySide6.QtWebEngineCore \
   --exclude-module PySide6.QtWebEngineWidgets \

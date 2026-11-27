@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import ssl
 import threading
 import urllib.error
 import urllib.parse
@@ -15,10 +17,62 @@ from typing import Any, Callable
 from appima import __version__
 from appima.core.models import ProviderError
 
-USER_AGENT = f"appima/{__version__} (+https://github.com/appima/appima)"
+USER_AGENT = f"appima/{__version__} (+https://github.com/hagdervriese/appima)"
 ProgressCallback = Callable[[int, int | None], None]
 
 _CONTENT_DISP_RE = re.compile(r'filename\*?=(?:UTF-8\'\')?"?([^";\r\n]+)"?', re.I)
+
+# Standard CA certificate bundles across Linux distributions (Debian/Ubuntu,
+# Arch/KDE Linux, Fedora/RHEL, openSUSE, Alpine).
+_SYSTEM_CA_BUNDLES = (
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/ca-certificates/extracted/tls-ca-bundle.pem",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/ca-bundle.pem",
+    "/etc/ssl/cert.pem",
+)
+
+_SSL_CONTEXT_CACHE: ssl.SSLContext | None = None
+
+
+def get_ssl_context() -> ssl.SSLContext:
+    """Return an SSLContext that works reliably across distros inside an AppImage."""
+    global _SSL_CONTEXT_CACHE
+    if _SSL_CONTEXT_CACHE is not None:
+        return _SSL_CONTEXT_CACHE
+
+    # 1. Respect explicit user/system environment overrides
+    env_cafile = os.environ.get("SSL_CERT_FILE", "").strip()
+    env_capath = os.environ.get("SSL_CERT_DIR", "").strip()
+    if (env_cafile and Path(env_cafile).is_file()) or (
+        env_capath and Path(env_capath).is_dir()
+    ):
+        _SSL_CONTEXT_CACHE = ssl.create_default_context(
+            cafile=env_cafile or None,
+            capath=env_capath or None,
+        )
+        return _SSL_CONTEXT_CACHE
+
+    # 2. Prefer host OS CA bundle (works on KDE Linux/Arch, Ubuntu, Fedora, openSUSE)
+    for ca_path in _SYSTEM_CA_BUNDLES:
+        if Path(ca_path).is_file():
+            _SSL_CONTEXT_CACHE = ssl.create_default_context(cafile=ca_path)
+            return _SSL_CONTEXT_CACHE
+
+    # 3. Fallback to certifi CA bundle (bundled inside the standalone AppImage)
+    try:
+        import certifi  # type: ignore[import-not-found]
+
+        ca_file = certifi.where()
+        if ca_file and Path(ca_file).is_file():
+            _SSL_CONTEXT_CACHE = ssl.create_default_context(cafile=ca_file)
+            return _SSL_CONTEXT_CACHE
+    except ImportError:
+        pass
+
+    # 4. Last resort: OpenSSL compiled-in defaults
+    _SSL_CONTEXT_CACHE = ssl.create_default_context()
+    return _SSL_CONTEXT_CACHE
 
 
 @dataclass
@@ -71,7 +125,9 @@ def fetch_text(
     """Fetch UTF-8 text from an HTTP(S) URL."""
     req = urllib.request.Request(url, headers=_build_headers(headers))
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(
+            req, timeout=timeout, context=get_ssl_context()
+        ) as resp:
             return resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         raise ProviderError(f"HTTP {exc.code} while requesting {url}: {exc.reason}") from exc
@@ -101,9 +157,10 @@ def head_request(
     timeout: int = 20,
 ) -> HeadResult:
     """Probe URL headers via HEAD (falling back to minimal GET if HEAD is rejected)."""
+    ctx = get_ssl_context()
     req = urllib.request.Request(url, headers=_build_headers(headers), method="HEAD")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             return _head_from_response(resp)
     except urllib.error.HTTPError as exc:
         if exc.code in (405, 501):
@@ -111,7 +168,9 @@ def head_request(
                 url, headers=_build_headers({**(headers or {}), "Range": "bytes=0-0"})
             )
             try:
-                with urllib.request.urlopen(get_req, timeout=timeout) as resp:
+                with urllib.request.urlopen(
+                    get_req, timeout=timeout, context=ctx
+                ) as resp:
                     return _head_from_response(resp)
             except (urllib.error.HTTPError, urllib.error.URLError) as inner:
                 raise ProviderError(f"Failed to probe {url}: {inner}") from inner
@@ -146,7 +205,9 @@ def download_file(
     dest_dir.mkdir(parents=True, exist_ok=True)
     req = urllib.request.Request(url, headers=_build_headers(headers))
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(
+            req, timeout=timeout, context=get_ssl_context()
+        ) as resp:
             final_url = resp.geturl()
             resolved_name = filename or _extract_filename(
                 final_url, resp.headers.get("Content-Disposition")

@@ -50,10 +50,10 @@ jobs:
       - name: Run unit & integration tests
         run: python3 -m unittest discover -s tests -v
 
-      - name: Install PySide6-Essentials and PyInstaller
+      - name: Install PySide6-Essentials, certifi, and PyInstaller
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install "PySide6-Essentials>=6.7,<6.9" "pyinstaller>=6.10"
+          python3 -m pip install "PySide6-Essentials>=6.7,<6.9" "pyinstaller>=6.10" "certifi>=2024.0"
 
       - name: Build AppImage
         run: bash packaging/build_appimage.sh
