@@ -168,6 +168,7 @@ class UnmanagedRowWidget(QFrame):
 
     details_requested = Signal(str)
     adopt_requested = Signal(str)
+    delete_requested = Signal(str)
 
     def __init__(self, path: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -258,6 +259,27 @@ class UnmanagedRowWidget(QFrame):
             lambda _checked=False, p=str(path): self.adopt_requested.emit(p)
         )
         layout.addWidget(self.adopt_btn)
+
+        self.delete_btn = QPushButton("Delete", self)
+        self.delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.delete_btn.setFlat(True)
+        self.delete_btn.setStyleSheet(
+            """
+            QPushButton {
+                padding: 6px 10px;
+                border-radius: 6px;
+                color: palette(placeholder-text);
+            }
+            QPushButton:hover {
+                color: #e74c3c;
+                background: palette(base);
+            }
+            """
+        )
+        self.delete_btn.clicked.connect(
+            lambda _checked=False, p=str(path): self.delete_requested.emit(p)
+        )
+        layout.addWidget(self.delete_btn)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
@@ -410,6 +432,7 @@ class MainWindow(QMainWindow):
                     u_row = UnmanagedRowWidget(path, parent=self.list_container)
                     u_row.details_requested.connect(self._inspect_unmanaged_item)
                     u_row.adopt_requested.connect(self._adopt_single_unmanaged)
+                    u_row.delete_requested.connect(self._confirm_delete_unmanaged)
                     self.list_layout.insertWidget(insert_idx, u_row)
                     insert_idx += 1
 
@@ -705,3 +728,23 @@ class MainWindow(QMainWindow):
     def _on_adopt_error(self, message: str) -> None:
         QMessageBox.warning(self, "Adoption failed", message)
         self.refresh_apps()
+
+    def _confirm_delete_unmanaged(self, raw_path: str) -> None:
+        path = Path(raw_path)
+        kind = "folder" if path.is_dir() else "file"
+        reply = QMessageBox.question(
+            self,
+            "Delete unmanaged app",
+            f"Permanently delete unmanaged {kind} \"{path.name}\"?\n\n• {path}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.manager.delete_unmanaged(path)
+        except AppimaError as exc:
+            QMessageBox.critical(self, "Delete failed", str(exc))
+            return
+        self.refresh_apps()
+        self.footer_label.setText(f"Deleted {path.name}.")

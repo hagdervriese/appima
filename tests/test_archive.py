@@ -19,7 +19,7 @@ from unittest.mock import patch
 from appima.core.config import AppimaPaths
 from appima.core.database import Database
 from appima.core.manager import AppManager
-from appima.core.models import FormatError
+from appima.core.models import AppimaError, FormatError
 from appima.providers.github import select_appimage_asset
 
 
@@ -319,6 +319,25 @@ class ArchiveFormatTests(unittest.TestCase):
             self.assertEqual(Path(adopted.exec_path).resolve(), bin_path.resolve())
             self.assertEqual(adopted.installed_version, "0.9.5")
             self.assertEqual(mgr.scan_unmanaged(), [])
+
+            # Test delete_unmanaged + safety guards
+            extra = root / "Apps" / "Unused-1.0.AppImage"
+            extra.write_bytes(_make_elf(b"unused"))
+            mgr.delete_unmanaged(extra)
+            self.assertFalse(extra.exists())
+
+            # Refuses to delete outside Apps folder or hidden .icons folder
+            outside = root / "outside.AppImage"
+            outside.write_bytes(_make_elf(b"out"))
+            with self.assertRaises(AppimaError):
+                mgr.delete_unmanaged(outside)
+            self.assertTrue(outside.exists())
+
+            dot_icons = root / "Apps" / ".icons"
+            dot_icons.mkdir(exist_ok=True)
+            with self.assertRaises(AppimaError):
+                mgr.delete_unmanaged(dot_icons)
+            self.assertTrue(dot_icons.exists())
 
     def test_github_archive_fallback_selection(self) -> None:
         assets = [

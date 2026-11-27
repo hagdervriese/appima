@@ -122,6 +122,7 @@ class GuiSmokeTests(unittest.TestCase):
             ]
             u_rows = [w for w in widgets if isinstance(w, UnmanagedRowWidget)]
             self.assertEqual(len(u_rows), 1)
+            self.assertEqual(u_rows[0].delete_btn.text(), "Delete")
             preview = mgr.inspect_unmanaged(unmanaged_ai)
             u_dlg = UnmanagedDetailsDialog(preview, parent=win)
             self.assertIn(preview.name, u_dlg.windowTitle())

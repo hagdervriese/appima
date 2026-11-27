@@ -446,6 +446,27 @@ class AppManager:
             conflicts=conflicts,
         )
 
+    def delete_unmanaged(self, path: Path | str) -> None:
+        """Safely delete an unmanaged AppImage file or portable folder inside apps_dir."""
+        apps_dir = self.config.apps_dir.expanduser().resolve()
+        target = Path(path).expanduser().resolve()
+
+        if target.parent != apps_dir or target.name.startswith("."):
+            raise AppimaError(
+                f"Refusing to delete {target}: only direct non-hidden items inside {apps_dir} can be deleted here."
+            )
+        if self.db.find_by_install_path(target) is not None:
+            raise AppimaError(
+                f"{target.name} is managed by appima — use Uninstall instead."
+            )
+        if not target.exists():
+            return
+
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink(missing_ok=True)
+
     def check_update(self, app_id: str) -> UpdateCheckResult:
         """Check upstream for a single managed app and persist any discovered update."""
         record = self.db.get_app(app_id)
