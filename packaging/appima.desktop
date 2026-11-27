@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=appima
+Comment=Minimalist AppImage & Portable App Manager
+Exec=appima
+Icon=appima
+Categories=System;Settings;Utility;
+Terminal=false
+StartupWMClass=appima

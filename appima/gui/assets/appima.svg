@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3daee9"/>
+      <stop offset="100%" stop-color="#1d6fa5"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#bg)"/>
+  <!-- Minimal package / box silhouette -->
+  <path d="M32 14 L48 23 L48 41 L32 50 L16 41 L16 23 Z" fill="none" stroke="#ffffff" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M16 23 L32 32 L48 23" fill="none" stroke="#ffffff" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M32 32 L32 50" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+  <!-- Subtle upward arrow inside top face -->
+  <circle cx="32" cy="23" r="3.2" fill="#ffffff"/>
+</svg>

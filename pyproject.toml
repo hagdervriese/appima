@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "appima"
+version = "0.1.0"
+description = "Minimalist AppImage & portable app manager for Linux with native desktop integration and automatic update checks."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+keywords = ["appimage", "linux", "kde", "desktop", "package-manager", "qt6"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Software Distribution",
+]
+dependencies = []
+
+[project.optional-dependencies]
+gui = ["PySide6>=6.5"]
+
+[project.scripts]
+appima = "appima.cli.main:main"
+appima-gui = "appima.gui.app:launch"
+
+[tool.setuptools.packages.find]
+include = ["appima*"]
+
+[tool.setuptools.package-data]
+"appima.gui" = ["assets/*"]
