@@ -12,6 +12,7 @@ from pathlib import Path
 
 from appima.core.desktop import parse_desktop_metadata
 from appima.core.models import ExtractedMetadata, FormatError
+from appima.core.runtime import current_appdir
 from appima.formats.base import PackageFormat
 
 _ELF_MAGIC = b"\x7fELF"
@@ -121,12 +122,24 @@ class AppImageFormat(PackageFormat):
                 f"File {path.name!r} is not a valid ELF AppImage binary."
             )
 
+    @staticmethod
+    def _find_unsquashfs() -> str | None:
+        found = shutil.which("unsquashfs")
+        if found:
+            return found
+        appdir = current_appdir()
+        if appdir:
+            bundled = appdir / "usr" / "bin" / "unsquashfs"
+            if bundled.is_file():
+                return str(bundled)
+        return None
+
     def inspect(self, path: Path) -> ExtractedMetadata:
         """Inspect .desktop and icon from the AppImage SquashFS safely."""
         self.validate(path)
         fallback_name, fallback_version = _guess_name_and_version(path.name)
 
-        unsquashfs = shutil.which("unsquashfs")
+        unsquashfs = self._find_unsquashfs()
         offset = find_squashfs_offset(path)
         if not unsquashfs or offset is None:
             return ExtractedMetadata(

@@ -25,24 +25,26 @@ A clean, minimalist **AppImage & Portable App Manager** for Linux.
 - **v0.2:** Portable archive support (`.tar.gz`, `.tar.xz`, `.zip`) for self-contained bundles such as Android Studio, JetBrains IDEs, and Antigravity.
 - **v0.3:** GitLab Releases provider, `.zsync` delta updates, and release notes viewer.
 
-## Requirements
-
-- Linux with Python 3.10+
-- `squashfs-tools` (`unsquashfs`) for safe AppImage inspection
-- `PySide6` (Qt 6) for the graphical interface
-- Optional: `libnotify-bin` (`notify-send`) and `systemd` user session for background update notifications
-
-On Ubuntu / Kubuntu / Debian:
-
-```bash
-sudo apt install python3-pyside6.qtwidgets python3-pyside6.qtgui python3-pyside6.qtcore squashfs-tools libnotify-bin
-```
-
 ## Quick Start
 
-Run directly from the repository:
+### Option 1: Standalone AppImage *(Recommended — zero dependencies, ideal for KDE Linux & immutable distros)*
+
+1. Download `appima-<version>-x86_64.AppImage` (and optionally `SHA256SUMS`) from the [GitHub Releases](https://github.com/hagdervriese/appima/releases) page.
+2. Make it executable and launch it:
+   ```bash
+   chmod +x appima-*-x86_64.AppImage
+   ./appima-*-x86_64.AppImage
+   ```
+3. Click **"Integrate appima"** on the welcome banner (or run `./appima-*-x86_64.AppImage integrate-self`). `appima` will place itself into `~/Apps`, create its own desktop launcher entry, and check GitHub for updates to itself just like any other managed app.
+
+### Option 2: Run from Source
+
+Requires Python 3.10+, `squashfs-tools`, and `PySide6` (for the GUI):
 
 ```bash
+# Ubuntu / Kubuntu / Debian
+sudo apt install python3-pyside6.qtwidgets python3-pyside6.qtgui python3-pyside6.qtcore squashfs-tools libnotify-bin
+
 # Launch the Qt 6 GUI
 python3 -m appima
 

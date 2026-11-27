@@ -7,8 +7,9 @@ import subprocess
 from pathlib import Path
 
 from appima.core.models import UpdateCheckResult
+from appima.core.runtime import gui_asset_path
 
-_ICON_PATH = Path(__file__).resolve().parent.parent / "gui" / "assets" / "appima.svg"
+_ICON_PATH = gui_asset_path("appima.svg")
 
 
 def notify_updates(updates: list[UpdateCheckResult]) -> bool:

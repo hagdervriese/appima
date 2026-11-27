@@ -10,6 +10,7 @@ from typing import Sequence
 from appima import __version__
 from appima.core.manager import AppManager
 from appima.core.models import VALID_CHECK_INTERVALS, AppimaError
+from appima.core.runtime import SELF_APP_ID
 from appima.service.notify import notify_updates
 from appima.service.systemd import get_timer_status, sync_update_timer
 
@@ -57,6 +58,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_scan = sub.add_parser("scan", help="Find unmanaged AppImages inside your Apps folder")
     p_scan.add_argument("--adopt", action="store_true", help="Adopt all discovered AppImages")
+
+    sub.add_parser(
+        "integrate-self",
+        help="Integrate the running appima AppImage into your Apps folder and desktop menu",
+    )
 
     p_config = sub.add_parser("config", help="View or edit appima configuration")
     p_config.add_argument("--apps-dir", default=None, help="Directory where managed apps are stored")
@@ -202,6 +208,18 @@ def main(argv: Sequence[str] | None = None, manager: AppManager | None = None) -
                     print(f"Unmanaged: {path}")
             return 0
 
+        if args.command == "integrate-self":
+            rec = mgr.integrate_self()
+            if mgr.config.check_interval != "off":
+                sync_update_timer(
+                    mgr.config.check_interval,
+                    mgr.paths,
+                    appimage_path=Path(rec.install_path),
+                )
+            print(f"Integrated appima → {rec.install_path}")
+            print(f"Desktop entry: {rec.desktop_file}")
+            return 0
+
         if args.command == "config":
             changed = False
             if args.apps_dir is not None or args.interval is not None:
@@ -211,7 +229,15 @@ def main(argv: Sequence[str] | None = None, manager: AppManager | None = None) -
                 )
                 changed = True
             if args.interval is not None:
-                ok, msg = sync_update_timer(args.interval, mgr.paths)
+                self_rec = mgr.get_app(SELF_APP_ID)
+                self_bin = (
+                    Path(self_rec.install_path)
+                    if self_rec and self_rec.is_present
+                    else None
+                )
+                ok, msg = sync_update_timer(
+                    args.interval, mgr.paths, appimage_path=self_bin
+                )
                 print(msg)
                 if not ok:
                     return 1

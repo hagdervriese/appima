@@ -7,6 +7,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from appima import __version__
 from appima.core.checksum import compute_file_hash, verify_file_hash
 from appima.core.config import AppimaPaths, load_config, save_config
 from appima.core.database import Database
@@ -17,10 +18,17 @@ from appima.core.models import (
     AppRecord,
     ChecksumMismatchError,
     Config,
+    ExtractedMetadata,
     FormatError,
     ProviderError,
     ReleaseInfo,
     UpdateCheckResult,
+)
+from appima.core.runtime import (
+    SELF_APP_ID,
+    SELF_GITHUB_REPO,
+    current_appimage_path,
+    gui_asset_path,
 )
 from appima.formats import AppImageFormat, ArchiveFormat, PackageFormat
 from appima.providers import (
@@ -572,6 +580,90 @@ class AppManager:
             Path(record.backup_path).unlink(missing_ok=True)
 
         self.db.delete_app(app_id)
+
+    def needs_self_integration(self, appimage_path: Path | None = None) -> bool:
+        """Return True if running as an AppImage that is not yet integrated into apps_dir."""
+        running = appimage_path or current_appimage_path()
+        if not running or not running.is_file():
+            return False
+
+        existing = self.db.get_app(SELF_APP_ID)
+        if existing and existing.is_present and existing.desktop_file:
+            if Path(existing.desktop_file).is_file():
+                return False
+        return True
+
+    def integrate_self(
+        self,
+        appimage_path: Path | None = None,
+        source_url: str = SELF_GITHUB_REPO,
+    ) -> AppRecord:
+        """Install/adopt the running appima AppImage into apps_dir with desktop & update integration."""
+        running = (appimage_path or current_appimage_path())
+        if not running or not running.is_file():
+            raise AppimaError(
+                "Self-integration is only available when running appima as an AppImage."
+            )
+
+        running = running.resolve()
+        apps_dir = self.config.apps_dir.expanduser().resolve()
+        apps_dir.mkdir(parents=True, exist_ok=True)
+        in_place = running.parent == apps_dir
+
+        fmt = self._format_by_id("appimage")
+        installed_path = fmt.install_file(
+            running,
+            apps_dir,
+            SELF_APP_ID,
+            in_place=in_place,
+        )
+
+        # Prefer appima's own SVG icon asset if SquashFS extraction didn't yield one
+        metadata = fmt.inspect(installed_path)
+        if not metadata.icon_bytes:
+            asset_icon = gui_asset_path("appima.svg")
+            if asset_icon.is_file():
+                metadata.icon_bytes = asset_icon.read_bytes()
+                metadata.icon_ext = "svg"
+        if not metadata.name or metadata.name.lower().startswith("appima"):
+            metadata = ExtractedMetadata(
+                name="appima",
+                comment="Minimalist AppImage & Portable App Manager",
+                categories="System;Settings;Utility;",
+                icon_bytes=metadata.icon_bytes,
+                icon_ext=metadata.icon_ext,
+                desktop_content=metadata.desktop_content,
+                wm_class="appima",
+            )
+
+        now = _utc_now()
+        existing = self.db.get_app(SELF_APP_ID)
+        record = AppRecord(
+            id=SELF_APP_ID,
+            name="appima",
+            format="appimage",
+            provider="github",
+            source_url=source_url,
+            installed_version=__version__,
+            install_path=str(installed_path),
+            checksum_algo="sha256",
+            checksum_value=compute_file_hash(installed_path, "sha256"),
+            checksum_verified=False,
+            launch_args=existing.launch_args if existing else "",
+            env_vars=existing.env_vars if existing else "",
+            release_url=source_url,
+            installed_at=existing.installed_at if existing else now,
+            updated_at=now,
+            last_checked_at=existing.last_checked_at if existing else now,
+        )
+
+        desktop_path, icon_path = integrate_app(
+            record, metadata, self.paths, refresh_cache=self.refresh_desktop
+        )
+        record.desktop_file = str(desktop_path)
+        record.icon_path = str(icon_path) if icon_path else ""
+        self.db.upsert_app(record)
+        return record
 
     def _unique_app_id(self, name: str) -> str:
         base = slugify_app_id(name)

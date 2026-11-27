@@ -9,6 +9,7 @@ from pathlib import Path
 
 from appima.core.config import AppimaPaths
 from appima.core.models import VALID_CHECK_INTERVALS
+from appima.core.runtime import current_appimage_path
 
 SERVICE_NAME = "appima-check.service"
 TIMER_NAME = "appima-check.timer"
@@ -24,7 +25,22 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent.parent
 
 
-def render_service_unit(python_executable: str | None = None) -> str:
+def render_service_unit(
+    python_executable: str | None = None,
+    appimage_path: Path | None = None,
+) -> str:
+    resolved_appimage = appimage_path or current_appimage_path()
+    if resolved_appimage is not None:
+        return (
+            "[Unit]\n"
+            "Description=appima background update check\n"
+            "After=network-online.target\n"
+            "\n"
+            "[Service]\n"
+            "Type=oneshot\n"
+            f'ExecStart="{resolved_appimage}" check --notify\n'
+        )
+
     py = python_executable or sys.executable
     root = _repo_root()
     return (
@@ -78,6 +94,7 @@ def sync_update_timer(
     interval: str,
     paths: AppimaPaths,
     run_systemctl: bool = True,
+    appimage_path: Path | None = None,
 ) -> tuple[bool, str]:
     """Install, update, or remove the systemd --user timer for background checks."""
     if interval not in VALID_CHECK_INTERVALS:
@@ -97,7 +114,9 @@ def sync_update_timer(
         return True, "Background update checks disabled."
 
     unit_dir.mkdir(parents=True, exist_ok=True)
-    service_path.write_text(render_service_unit(), encoding="utf-8")
+    service_path.write_text(
+        render_service_unit(appimage_path=appimage_path), encoding="utf-8"
+    )
     timer_path.write_text(render_timer_unit(interval), encoding="utf-8")
 
     if not run_systemctl:

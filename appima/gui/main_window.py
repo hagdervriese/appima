@@ -20,10 +20,12 @@ from PySide6.QtWidgets import (
 
 from appima.core.manager import AppManager
 from appima.core.models import AppRecord, UpdateCheckResult
+from appima.core.runtime import SELF_APP_ID
 from appima.gui.add_dialog import AddAppDialog
 from appima.gui.details_dialog import AppDetailsDialog
 from appima.gui.settings_dialog import SettingsDialog
 from appima.gui.workers import ProgressWorker, TaskWorker
+from appima.service.systemd import sync_update_timer
 
 
 class AppRowWidget(QFrame):
@@ -122,6 +124,7 @@ class MainWindow(QMainWindow):
         self._check_worker: TaskWorker | None = None
         self._update_worker: ProgressWorker | None = None
         self._adopt_worker: TaskWorker | None = None
+        self._self_integrate_worker: TaskWorker | None = None
 
         self.setWindowTitle("appima")
         self.setMinimumSize(640, 480)
@@ -173,6 +176,22 @@ class MainWindow(QMainWindow):
         header.addWidget(self.settings_btn)
 
         root.addLayout(header)
+
+        # Optional banner when running appima as an unintegrated standalone AppImage
+        self.self_banner = QFrame()
+        self.self_banner.setFrameShape(QFrame.Shape.StyledPanel)
+        self.self_banner.setStyleSheet(
+            "QFrame { border: 1px solid palette(highlight); border-radius: 8px; background: palette(alternate-base); }"
+        )
+        self_banner_layout = QHBoxLayout(self.self_banner)
+        self_banner_layout.setContentsMargins(12, 8, 12, 8)
+        self.self_banner_label = QLabel("")
+        self_banner_layout.addWidget(self.self_banner_label, 1)
+        self.integrate_self_btn = QPushButton("Integrate appima")
+        self.integrate_self_btn.clicked.connect(self._integrate_self)
+        self_banner_layout.addWidget(self.integrate_self_btn)
+        self.self_banner.setVisible(False)
+        root.addWidget(self.self_banner)
 
         # Optional banner when unmanaged AppImages are sitting in ~/Apps
         self.unmanaged_banner = QFrame()
@@ -235,6 +254,15 @@ class MainWindow(QMainWindow):
                 row.clicked.connect(self._open_details)
                 row.update_requested.connect(self._start_update)
                 self.list_layout.insertWidget(idx, row)
+
+        # Offer one-click self-integration when running as an unintegrated AppImage
+        if self.manager.needs_self_integration():
+            self.self_banner_label.setText(
+                f"Integrate appima into {self.manager.config.apps_dir} and your Application Menu?"
+            )
+            self.self_banner.setVisible(True)
+        else:
+            self.self_banner.setVisible(False)
 
         # Check for unmanaged AppImages already sitting in apps_dir
         unmanaged = self.manager.scan_unmanaged()
@@ -344,9 +372,47 @@ class MainWindow(QMainWindow):
         self.check_btn.setEnabled(True)
         self.add_btn.setEnabled(True)
         self.refresh_apps()
+        if record.id == SELF_APP_ID:
+            self.footer_label.setText(
+                f"Updated appima to v{record.installed_version} — restart appima to use the new version."
+            )
+        else:
+            self.footer_label.setText(
+                f"Updated {record.name} to version {record.installed_version}."
+            )
+
+    def _integrate_self(self) -> None:
+        if self._self_integrate_worker and self._self_integrate_worker.isRunning():
+            return
+        self.integrate_self_btn.setEnabled(False)
+        self.footer_label.setText("Integrating appima into your system…")
+
+        def _do_integrate() -> AppRecord:
+            rec = self.manager.integrate_self()
+            if self.manager.config.check_interval != "off":
+                sync_update_timer(
+                    self.manager.config.check_interval,
+                    self.manager.paths,
+                    appimage_path=Path(rec.install_path),
+                )
+            return rec
+
+        self._self_integrate_worker = TaskWorker(_do_integrate, parent=self)
+        self._self_integrate_worker.finished_ok.connect(self._on_self_integrate_done)
+        self._self_integrate_worker.failed.connect(self._on_self_integrate_error)
+        self._self_integrate_worker.start()
+
+    def _on_self_integrate_done(self, record: AppRecord) -> None:
+        self.integrate_self_btn.setEnabled(True)
+        self.refresh_apps()
         self.footer_label.setText(
-            f"Updated {record.name} to version {record.installed_version}."
+            f"Integrated appima into {record.install_path} and your Application Menu."
         )
+
+    def _on_self_integrate_error(self, message: str) -> None:
+        self.integrate_self_btn.setEnabled(True)
+        QMessageBox.warning(self, "Self-integration failed", message)
+        self.refresh_apps()
 
     def _on_update_error(self, message: str) -> None:
         self.check_btn.setEnabled(True)

@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from appima.core.manager import AppManager
+from appima.core.runtime import SELF_APP_ID
 from appima.service.systemd import get_timer_status, sync_update_timer
 
 _INTERVAL_CHOICES = (
@@ -129,7 +130,15 @@ class SettingsDialog(QDialog):
             check_interval=interval,
             keep_backup=self.backup_check.isChecked(),
         )
-        ok, msg = sync_update_timer(interval, self.manager.paths)
+        self_rec = self.manager.get_app(SELF_APP_ID)
+        self_bin = (
+            Path(self_rec.install_path)
+            if self_rec and self_rec.is_present
+            else None
+        )
+        ok, msg = sync_update_timer(
+            interval, self.manager.paths, appimage_path=self_bin
+        )
         if not ok:
             QMessageBox.information(self, "Background service note", msg)
 

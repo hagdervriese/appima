@@ -6,8 +6,9 @@ import sys
 from pathlib import Path
 
 from appima import __version__
+from appima.core.runtime import gui_asset_path
 
-_ICON_PATH = Path(__file__).resolve().parent / "assets" / "appima.svg"
+_ICON_PATH = gui_asset_path("appima.svg")
 
 
 def launch() -> int:
