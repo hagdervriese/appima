@@ -20,8 +20,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from appima import __version__
 from appima.core.manager import AppManager
-from appima.core.runtime import SELF_APP_ID
+from appima.core.runtime import SELF_APP_ID, current_appimage_path
 from appima.service.systemd import get_timer_status, sync_update_timer
 
 _INTERVAL_CHOICES = (
@@ -96,8 +97,21 @@ class SettingsDialog(QDialog):
 
         root.addLayout(form)
 
-        # Actions
+        # Actions + subtle running version proof
+        running_bin = current_appimage_path()
+        version_text = f"appima v{__version__}"
+        if running_bin:
+            version_text += f" · {running_bin.name}"
+        self.version_label = QLabel(version_text)
+        self.version_label.setToolTip(
+            str(running_bin) if running_bin else "Running from Python source"
+        )
+        self.version_label.setStyleSheet(
+            "font-size: 11px; color: palette(placeholder-text);"
+        )
+
         btn_row = QHBoxLayout()
+        btn_row.addWidget(self.version_label)
         btn_row.addStretch(1)
         cancel_btn = QPushButton("Cancel")
         cancel_btn.clicked.connect(self.reject)

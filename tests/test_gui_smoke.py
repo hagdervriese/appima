@@ -81,10 +81,13 @@ class GuiSmokeTests(unittest.TestCase):
 
             self.assertEqual(opened, [rec.id])
 
-            # Verify Add and Settings dialogs instantiate cleanly
+            # Verify Add and Settings dialogs instantiate cleanly (and Settings shows live version)
+            from appima import __version__
+
             add_dlg = AddAppDialog(mgr, parent=win)
             add_dlg.close()
             settings_dlg = SettingsDialog(mgr, parent=win)
+            self.assertIn(__version__, settings_dlg.version_label.text())
             settings_dlg.close()
             win.close()
 

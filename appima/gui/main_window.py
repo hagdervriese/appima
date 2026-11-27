@@ -461,6 +461,12 @@ class MainWindow(QMainWindow):
         self.add_btn.setEnabled(True)
         self.refresh_apps()
         if record.id == SELF_APP_ID:
+            if self.manager.config.check_interval != "off":
+                sync_update_timer(
+                    self.manager.config.check_interval,
+                    self.manager.paths,
+                    appimage_path=Path(record.install_path),
+                )
             self.footer_label.setText(
                 f"Updated appima to v{record.installed_version} — restarting automatically…"
             )
