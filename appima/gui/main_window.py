@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import traceback
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon, QMouseEvent
 from PySide6.QtWidgets import (
+    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -102,15 +104,15 @@ class AppRowWidget(QFrame):
                 """
             )
             self.update_btn.clicked.connect(
-                lambda: self.update_requested.emit(self.record.id)
+                lambda _checked=False, aid=self.record.id: self.update_requested.emit(aid)
             )
             layout.addWidget(self.update_btn)
 
         # Quiet single-home actions: Details and Uninstall
-        details_btn = QPushButton("Details")
-        details_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        details_btn.setFlat(True)
-        details_btn.setStyleSheet(
+        self.details_btn = QPushButton("Details", self)
+        self.details_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.details_btn.setFlat(True)
+        self.details_btn.setStyleSheet(
             """
             QPushButton {
                 padding: 6px 10px;
@@ -121,13 +123,15 @@ class AppRowWidget(QFrame):
             }
             """
         )
-        details_btn.clicked.connect(lambda: self.details_requested.emit(self.record.id))
-        layout.addWidget(details_btn)
+        self.details_btn.clicked.connect(
+            lambda _checked=False, aid=self.record.id: self.details_requested.emit(aid)
+        )
+        layout.addWidget(self.details_btn)
 
-        uninstall_btn = QPushButton("Uninstall")
-        uninstall_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        uninstall_btn.setFlat(True)
-        uninstall_btn.setStyleSheet(
+        self.uninstall_btn = QPushButton("Uninstall", self)
+        self.uninstall_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.uninstall_btn.setFlat(True)
+        self.uninstall_btn.setStyleSheet(
             """
             QPushButton {
                 padding: 6px 10px;
@@ -140,10 +144,10 @@ class AppRowWidget(QFrame):
             }
             """
         )
-        uninstall_btn.clicked.connect(
-            lambda: self.uninstall_requested.emit(self.record.id)
+        self.uninstall_btn.clicked.connect(
+            lambda _checked=False, aid=self.record.id: self.uninstall_requested.emit(aid)
         )
-        layout.addWidget(uninstall_btn)
+        layout.addWidget(self.uninstall_btn)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
@@ -326,12 +330,23 @@ class MainWindow(QMainWindow):
                 )
 
     def _open_details(self, app_id: str) -> None:
-        record = self.manager.get_app(app_id)
-        if not record:
-            return
-        dialog = AppDetailsDialog(self.manager, record, parent=self)
-        if dialog.exec() == AppDetailsDialog.DialogCode.Accepted and dialog.changed:
-            self.refresh_apps()
+        try:
+            record = self.manager.get_app(app_id)
+            if not record:
+                return
+            dialog = AppDetailsDialog(self.manager, record, parent=self)
+            result = dialog.exec()
+            if result == QDialog.DialogCode.Accepted and dialog.changed:
+                self.refresh_apps()
+            elif dialog.changed:
+                self.refresh_apps()
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            QMessageBox.critical(
+                self,
+                "Could not open Details",
+                f"An unexpected error occurred while opening details:\n{exc}",
+            )
 
     def _confirm_uninstall(self, app_id: str) -> None:
         record = self.manager.get_app(app_id)
@@ -485,6 +500,41 @@ class MainWindow(QMainWindow):
         unmanaged = self.manager.scan_unmanaged()
         if not unmanaged:
             return
+
+        # Pre-check if any unmanaged AppImage already has a similar desktop entry
+        conflict_lines: list[str] = []
+        for path in unmanaged:
+            try:
+                rel = self.manager.preview_source(str(path))
+                candidate_name = rel.name_hint or path.stem
+            except AppimaError:
+                candidate_name = path.stem
+            conflicts = self.manager.find_conflicting_apps(candidate_name)
+            for c in conflicts[:2]:
+                conflict_lines.append(
+                    f"• {path.name} matches \"{c.name}\" [{c.source_kind}]\n  {c.desktop_path}"
+                )
+
+        if conflict_lines:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setWindowTitle("Similar desktop entry already exists")
+            msg.setText(
+                "One or more apps in your folder already have a similar launcher entry on your system:"
+            )
+            msg.setInformativeText(
+                "\n".join(conflict_lines[:6])
+                + "\n\nDo you want to continue integrating them anyway?"
+            )
+            continue_btn = msg.addButton(
+                "Continue Anyway", QMessageBox.ButtonRole.AcceptRole
+            )
+            cancel_btn = msg.addButton(QMessageBox.StandardButton.Cancel)
+            msg.setDefaultButton(cancel_btn)
+            msg.exec()
+            if msg.clickedButton() != continue_btn:
+                return
+
         self.adopt_btn.setEnabled(False)
         self.footer_label.setText("Adopting existing AppImages…")
 

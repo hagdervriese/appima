@@ -11,13 +11,18 @@ from appima import __version__
 from appima.core.checksum import compute_file_hash, verify_file_hash
 from appima.core.config import AppimaPaths, load_config, save_config
 from appima.core.database import Database
-from appima.core.desktop import integrate_app, remove_integration
+from appima.core.desktop import (
+    find_existing_desktop_entries,
+    integrate_app,
+    remove_integration,
+)
 from appima.core.downloader import ProgressCallback, download_file
 from appima.core.models import (
     AppimaError,
     AppRecord,
     ChecksumMismatchError,
     Config,
+    DesktopConflict,
     ExtractedMetadata,
     FormatError,
     ProviderError,
@@ -135,7 +140,34 @@ class AppManager:
     def preview_source(self, source: str, asset_pattern: str = "") -> ReleaseInfo:
         """Resolve source metadata without downloading or installing anything."""
         provider = self._resolve_provider(source)
-        return provider.resolve_latest(source, asset_pattern=asset_pattern)
+        release = provider.resolve_latest(source, asset_pattern=asset_pattern)
+        # For local AppImages, inspect real display name safely without executing
+        if provider.provider_id == "local":
+            local_path = Path(release.download_url)
+            try:
+                fmt = self._resolve_format(local_path)
+                meta = fmt.inspect(local_path)
+                if meta.name:
+                    release.name_hint = meta.name
+                if release.version in ("", "local", "unknown") and meta.version_hint:
+                    release.version = normalize_version(meta.version_hint)
+            except AppimaError:
+                pass
+        return release
+
+    def find_conflicting_apps(
+        self,
+        app_name: str,
+        exclude_app_id: str = "",
+        search_dirs: list[Path] | None = None,
+    ) -> list[DesktopConflict]:
+        """Find existing desktop entries with the same or a very similar name."""
+        return find_existing_desktop_entries(
+            app_name,
+            self.paths,
+            exclude_app_id=exclude_app_id,
+            search_dirs=search_dirs,
+        )
 
     def install_app(
         self,

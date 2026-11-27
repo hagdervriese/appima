@@ -10,6 +10,7 @@ from appima.core.config import AppimaPaths
 from appima.core.desktop import (
     MANAGED_MARKER_KEY,
     build_exec_line,
+    find_existing_desktop_entries,
     integrate_app,
     remove_integration,
 )
@@ -133,6 +134,46 @@ class DesktopAndSystemdTests(unittest.TestCase):
             AppImageFormat._rank_icon_candidates(electron_only, ""),
             ["usr/share/icons/hicolor/0x0/apps/coolapp.png"],
         )
+
+    def test_find_existing_desktop_entries_exact_fuzzy_and_filtering(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = _temp_paths(root)
+            sys_apps = root / "usr" / "share" / "applications"
+            flatpak_apps = root / "var" / "lib" / "flatpak" / "exports" / "share" / "applications"
+            sys_apps.mkdir(parents=True)
+            flatpak_apps.mkdir(parents=True)
+
+            (flatpak_apps / "md.obsidian.Obsidian.desktop").write_text(
+                "[Desktop Entry]\nType=Application\nName=Obsidian\nExec=flatpak run md.obsidian.Obsidian\n",
+                encoding="utf-8",
+            )
+            (sys_apps / "craftanything.desktop").write_text(
+                "[Desktop Entry]\nType=Application\nName=CraftAnything\nExec=/usr/bin/craft\n",
+                encoding="utf-8",
+            )
+            (sys_apps / "firefox.desktop").write_text(
+                "[Desktop Entry]\nType=Application\nName=Firefox\nExec=firefox\n",
+                encoding="utf-8",
+            )
+            (sys_apps / "hidden.desktop").write_text(
+                "[Desktop Entry]\nType=Application\nName=Obsidian\nNoDisplay=true\nExec=obs\n",
+                encoding="utf-8",
+            )
+
+            dirs = [paths.applications_dir, sys_apps, flatpak_apps]
+            hits = find_existing_desktop_entries("Obsidian Notes", paths, search_dirs=dirs)
+            self.assertEqual(len(hits), 1)
+            self.assertEqual(hits[0].name, "Obsidian")
+            self.assertEqual(hits[0].source_kind, "Flatpak")
+
+            fuzzy = find_existing_desktop_entries("Craft Anything", paths, search_dirs=dirs)
+            self.assertEqual(len(fuzzy), 1)
+            self.assertEqual(fuzzy[0].name, "CraftAnything")
+            self.assertEqual(fuzzy[0].similarity, 1.0)
+
+            none_found = find_existing_desktop_entries("Blender", paths, search_dirs=dirs)
+            self.assertEqual(none_found, [])
 
 
 if __name__ == "__main__":

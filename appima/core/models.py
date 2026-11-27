@@ -163,3 +163,15 @@ class UpdateCheckResult:
     available_version: str = ""
     update_available: bool = False
     error: str = ""
+
+
+@dataclass
+class DesktopConflict:
+    """An existing desktop launcher entry matching or closely resembling an app name."""
+
+    name: str
+    desktop_path: str
+    exec_cmd: str = ""
+    source_kind: str = "System"
+    similarity: float = 1.0
+    is_appima_managed: bool = False

@@ -55,6 +55,11 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install "PySide6-Essentials>=6.7,<6.9" "pyinstaller>=6.10" "certifi>=2024.0"
 
+      - name: Run headless Qt 6 GUI smoke tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python3 -m unittest tests/test_gui_smoke.py -v
+
       - name: Build AppImage
         run: bash packaging/build_appimage.sh
 

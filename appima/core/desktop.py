@@ -3,16 +3,29 @@
 from __future__ import annotations
 
 import configparser
+import difflib
+import os
+import re
 import shlex
 import shutil
 import subprocess
 from pathlib import Path
 
 from appima.core.config import AppimaPaths
-from appima.core.models import AppRecord, ExtractedMetadata, IntegrationError
+from appima.core.models import (
+    AppRecord,
+    DesktopConflict,
+    ExtractedMetadata,
+    IntegrationError,
+)
 
 MANAGED_MARKER_KEY = "X-Appima-Managed"
 MANAGED_ID_KEY = "X-Appima-Id"
+_NORM_STRIP_RE = re.compile(r"[^a-z0-9]+")
+_TRAILING_NOISE_RE = re.compile(
+    r"\b(?:appimage|linux|x86_64|amd64|aarch64|arm64|desktop|v?\d+(?:\.\d+)*)\b",
+    re.IGNORECASE,
+)
 
 
 def _quote_desktop_arg(value: str) -> str:
@@ -258,3 +271,139 @@ def refresh_desktop_caches(paths: AppimaPaths) -> None:
             )
         except (OSError, subprocess.SubprocessError):
             pass
+
+
+def _normalize_app_name(name: str) -> str:
+    """Normalize an application name for fuzzy duplicate detection."""
+    cleaned = _TRAILING_NOISE_RE.sub(" ", name.lower())
+    return _NORM_STRIP_RE.sub("", cleaned).strip()
+
+
+def _name_similarity(candidate_name: str, existing_name: str) -> float:
+    """Compute a similarity score in [0.0, 1.0] between two app names."""
+    a = _normalize_app_name(candidate_name)
+    b = _normalize_app_name(existing_name)
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    # Substring match for meaningful names (e.g. "Obsidian" vs "Obsidian Notes")
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    if len(shorter) >= 4 and shorter in longer:
+        return max(0.85, len(shorter) / len(longer))
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def _classify_desktop_origin(desktop_path: Path, is_managed: bool) -> str:
+    if is_managed:
+        return "appima"
+    s = str(desktop_path)
+    if "/flatpak/" in s:
+        return "Flatpak"
+    if "/snapd/" in s or "/snap/" in s:
+        return "Snap"
+    if str(desktop_path).startswith(str(Path.home())):
+        return "Local user entry"
+    return "System"
+
+
+def default_application_dirs(paths: AppimaPaths) -> list[Path]:
+    """Return standard XDG, Flatpak, and Snap application directories on Linux."""
+    candidates: list[Path] = [
+        paths.applications_dir,
+        Path.home() / ".local" / "share" / "flatpak" / "exports" / "share" / "applications",
+        Path("/usr/local/share/applications"),
+        Path("/usr/share/applications"),
+        Path("/var/lib/flatpak/exports/share/applications"),
+        Path("/var/lib/snapd/desktop/applications"),
+    ]
+    for raw in os.environ.get("XDG_DATA_DIRS", "").split(":"):
+        raw = raw.strip()
+        if raw:
+            candidates.append(Path(raw) / "applications")
+
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for d in candidates:
+        try:
+            resolved = d.expanduser().resolve()
+        except OSError:
+            resolved = d
+        if resolved not in seen and resolved.is_dir():
+            seen.add(resolved)
+            unique.append(resolved)
+    return unique
+
+
+def find_existing_desktop_entries(
+    app_name: str,
+    paths: AppimaPaths,
+    exclude_app_id: str = "",
+    search_dirs: list[Path] | None = None,
+    threshold: float = 0.78,
+) -> list[DesktopConflict]:
+    """Scan installed .desktop files for exact or closely similar application names."""
+    if not app_name.strip():
+        return []
+
+    dirs = search_dirs if search_dirs is not None else default_application_dirs(paths)
+    conflicts: list[DesktopConflict] = []
+    seen_paths: set[str] = set()
+
+    for app_dir in dirs:
+        if not app_dir.is_dir():
+            continue
+        for desktop_file in sorted(app_dir.glob("*.desktop")):
+            if not desktop_file.is_file():
+                continue
+            path_key = str(desktop_file)
+            if path_key in seen_paths:
+                continue
+            seen_paths.add(path_key)
+
+            try:
+                text = desktop_file.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+
+            parser = configparser.ConfigParser(interpolation=None, strict=False)
+            parser.optionxform = str  # type: ignore[assignment]
+            try:
+                parser.read_string(text)
+            except configparser.Error:
+                continue
+
+            if not parser.has_section("Desktop Entry"):
+                continue
+            entry = parser["Desktop Entry"]
+            if entry.get("Type", "").strip() != "Application":
+                continue
+            if entry.get("NoDisplay", "").strip().lower() == "true":
+                continue
+            if entry.get("Hidden", "").strip().lower() == "true":
+                continue
+
+            is_managed = entry.get(MANAGED_MARKER_KEY, "").strip().lower() == "true"
+            managed_id = entry.get(MANAGED_ID_KEY, "").strip()
+            if exclude_app_id and is_managed and managed_id == exclude_app_id:
+                continue
+
+            entry_name = entry.get("Name", "").strip()
+            if not entry_name:
+                continue
+
+            score = _name_similarity(app_name, entry_name)
+            if score >= threshold:
+                conflicts.append(
+                    DesktopConflict(
+                        name=entry_name,
+                        desktop_path=str(desktop_file),
+                        exec_cmd=entry.get("Exec", "").strip(),
+                        source_kind=_classify_desktop_origin(desktop_file, is_managed),
+                        similarity=score,
+                        is_appima_managed=is_managed,
+                    )
+                )
+
+    conflicts.sort(key=lambda c: (-c.similarity, c.name.lower()))
+    return conflicts

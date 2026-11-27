@@ -22,7 +22,8 @@ from PySide6.QtWidgets import (
 
 from appima.core.checksum import parse_checksum_input
 from appima.core.manager import AppManager
-from appima.core.models import AppimaError, AppRecord, ReleaseInfo
+from appima.core.models import AppimaError, AppRecord, DesktopConflict, ReleaseInfo
+from appima.formats.appimage import _guess_name_and_version
 from appima.gui.workers import ProgressWorker, TaskWorker
 
 
@@ -34,6 +35,7 @@ class AddAppDialog(QDialog):
         self.manager = manager
         self.installed_record: AppRecord | None = None
         self._preview_worker: TaskWorker | None = None
+        self._preflight_worker: TaskWorker | None = None
         self._install_worker: ProgressWorker | None = None
 
         self.setWindowTitle("Add App")
@@ -219,12 +221,28 @@ class AddAppDialog(QDialog):
             if release.checksum
             else ""
         )
+        candidate_name = self._candidate_name_from_release(release)
+        conflicts = self.manager.find_conflicting_apps(candidate_name)
+        conflict_part = ""
+        if conflicts:
+            first = conflicts[0]
+            conflict_part = (
+                f"\n⚠ Similar app already installed: {first.name} [{first.source_kind}]"
+            )
         self.preview_label.setText(
             f"<b>{release.filename}</b>\n"
             f"Version: {release.version} · Source: {release.provider}{size_part}"
-            f"{checksum_part}"
+            f"{checksum_part}{conflict_part}"
         )
         self.preview_frame.setVisible(True)
+
+    def _candidate_name_from_release(self, release: ReleaseInfo) -> str:
+        if self.name_edit.text().strip():
+            return self.name_edit.text().strip()
+        if release.name_hint:
+            return release.name_hint
+        guessed, _ = _guess_name_and_version(release.filename)
+        return guessed
 
     def _on_preview_error(self, message: str) -> None:
         self._set_busy(False)
@@ -233,7 +251,6 @@ class AddAppDialog(QDialog):
     def _start_install(self) -> None:
         source = self.source_edit.text().strip()
         checksum = self.checksum_edit.text().strip()
-        custom_name = self.name_edit.text().strip()
         pattern = self.pattern_edit.text().strip()
 
         if checksum:
@@ -242,6 +259,56 @@ class AddAppDialog(QDialog):
             except AppimaError as exc:
                 QMessageBox.warning(self, "Invalid checksum", str(exc))
                 return
+
+        # Pre-flight: resolve candidate name and check for existing similar desktop entries
+        self._set_busy(True, "Checking for existing desktop entries…")
+
+        def _preflight() -> list[DesktopConflict]:
+            release = self.manager.preview_source(source, asset_pattern=pattern)
+            candidate_name = self._candidate_name_from_release(release)
+            return self.manager.find_conflicting_apps(candidate_name)
+
+        self._preflight_worker = TaskWorker(_preflight, parent=self)
+        self._preflight_worker.finished_ok.connect(self._on_preflight_done)
+        self._preflight_worker.failed.connect(self._on_install_error)
+        self._preflight_worker.start()
+
+    def _on_preflight_done(self, conflicts: list[DesktopConflict]) -> None:
+        if conflicts and not self._confirm_conflicts(conflicts):
+            self._set_busy(False)
+            return
+        self._begin_download_and_install()
+
+    def _confirm_conflicts(self, conflicts: list[DesktopConflict]) -> bool:
+        lines = [
+            f"• {c.name} [{c.source_kind}]\n  {c.desktop_path}"
+            for c in conflicts[:5]
+        ]
+        if len(conflicts) > 5:
+            lines.append(f"• and {len(conflicts) - 5} more…")
+
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setWindowTitle("Similar application already exists")
+        msg.setText(
+            "A desktop launcher entry with the same or a very similar name already exists on your system:"
+        )
+        msg.setInformativeText(
+            "\n".join(lines) + "\n\nDo you want to continue installing anyway?"
+        )
+        install_btn = msg.addButton(
+            "Install Anyway", QMessageBox.ButtonRole.AcceptRole
+        )
+        cancel_btn = msg.addButton(QMessageBox.StandardButton.Cancel)
+        msg.setDefaultButton(cancel_btn)
+        msg.exec()
+        return msg.clickedButton() == install_btn
+
+    def _begin_download_and_install(self) -> None:
+        source = self.source_edit.text().strip()
+        checksum = self.checksum_edit.text().strip()
+        custom_name = self.name_edit.text().strip()
+        pattern = self.pattern_edit.text().strip()
 
         self._set_busy(True, "Installing…")
         self.progress_bar.setRange(0, 0)

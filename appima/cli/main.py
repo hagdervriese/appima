@@ -36,6 +36,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_install.add_argument("--checksum", default="", help="Expected MD5/SHA-256/SHA-512 checksum")
     p_install.add_argument("--name", default="", help="Override application display name")
     p_install.add_argument("--pattern", default="", help="Glob pattern to select a specific GitHub asset")
+    p_install.add_argument(
+        "--force",
+        action="store_true",
+        help="Install without prompting even if a similar desktop entry already exists",
+    )
 
     p_check = sub.add_parser("check", help="Check managed apps for upstream updates")
     p_check.add_argument("app_id", nargs="?", default="", help="Optional single app ID to check")
@@ -124,6 +129,19 @@ def main(argv: Sequence[str] | None = None, manager: AppManager | None = None) -
             return 0
 
         if args.command == "install":
+            if not args.force and sys.stdin.isatty():
+                release = mgr.preview_source(args.source, asset_pattern=args.pattern)
+                candidate = args.name.strip() or release.name_hint or Path(release.filename).stem
+                conflicts = mgr.find_conflicting_apps(candidate)
+                if conflicts:
+                    print("Similar desktop entry already exists on your system:")
+                    for c in conflicts[:5]:
+                        print(f"  • {c.name} [{c.source_kind}] ({c.desktop_path})")
+                    answer = input("Continue installing anyway? [y/N] ").strip().lower()
+                    if answer not in ("y", "yes"):
+                        print("Installation aborted.")
+                        return 0
+
             rec = mgr.install_app(
                 args.source,
                 expected_checksum=args.checksum,
