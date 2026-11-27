@@ -13,8 +13,10 @@ from appima.core.config import AppimaPaths, load_config, save_config
 from appima.core.database import Database
 from appima.core.desktop import (
     find_existing_desktop_entries,
+    has_exact_desktop_name_conflict,
     integrate_app,
     remove_integration,
+    suggest_unique_app_name,
 )
 from appima.core.downloader import ProgressCallback, download_file
 from appima.core.models import (
@@ -167,6 +169,31 @@ class AppManager:
             self.paths,
             exclude_app_id=exclude_app_id,
             search_dirs=search_dirs,
+        )
+
+    def has_exact_name_conflict(
+        self,
+        app_name: str,
+        exclude_app_id: str = "",
+        search_dirs: list[Path] | None = None,
+    ) -> DesktopConflict | None:
+        """Return an existing desktop entry whose visible Name matches app_name exactly."""
+        return has_exact_desktop_name_conflict(
+            app_name,
+            self.paths,
+            exclude_app_id=exclude_app_id,
+            search_dirs=search_dirs,
+        )
+
+    def suggest_unique_name(
+        self,
+        base_name: str,
+        version: str = "",
+        search_dirs: list[Path] | None = None,
+    ) -> str:
+        """Return a unique display name suggestion for a conflicting app."""
+        return suggest_unique_app_name(
+            base_name, version, self.paths, search_dirs=search_dirs
         )
 
     def install_app(

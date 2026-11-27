@@ -18,6 +18,7 @@ from appima.core.models import (
     ExtractedMetadata,
     IntegrationError,
 )
+from appima.core.runtime import clean_subprocess_env
 
 MANAGED_MARKER_KEY = "X-Appima-Managed"
 MANAGED_ID_KEY = "X-Appima-Id"
@@ -246,6 +247,7 @@ def remove_integration(
 
 def refresh_desktop_caches(paths: AppimaPaths) -> None:
     """Notify XDG and KDE Plasma about updated desktop entries."""
+    sub_env = clean_subprocess_env()
     update_db = shutil.which("update-desktop-database")
     if update_db:
         try:
@@ -253,6 +255,7 @@ def refresh_desktop_caches(paths: AppimaPaths) -> None:
                 [update_db, str(paths.applications_dir)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=sub_env,
                 timeout=10,
                 check=False,
             )
@@ -266,6 +269,7 @@ def refresh_desktop_caches(paths: AppimaPaths) -> None:
                 [kbuild],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=sub_env,
                 timeout=10,
                 check=False,
             )
@@ -407,3 +411,46 @@ def find_existing_desktop_entries(
 
     conflicts.sort(key=lambda c: (-c.similarity, c.name.lower()))
     return conflicts
+
+
+def has_exact_desktop_name_conflict(
+    app_name: str,
+    paths: AppimaPaths,
+    exclude_app_id: str = "",
+    search_dirs: list[Path] | None = None,
+) -> DesktopConflict | None:
+    """Return an existing desktop entry whose visible Name matches app_name exactly."""
+    target = app_name.strip().lower()
+    if not target:
+        return None
+    for conflict in find_existing_desktop_entries(
+        app_name,
+        paths,
+        exclude_app_id=exclude_app_id,
+        search_dirs=search_dirs,
+        threshold=0.9,
+    ):
+        if conflict.name.strip().lower() == target:
+            return conflict
+    return None
+
+
+def suggest_unique_app_name(
+    base_name: str,
+    version: str,
+    paths: AppimaPaths,
+    search_dirs: list[Path] | None = None,
+) -> str:
+    """Suggest a clean, unique desktop display name (preferring the app version)."""
+    clean_base = base_name.strip() or "App"
+    candidates: list[str] = []
+    if version and version not in ("unknown", "local"):
+        candidates.append(f"{clean_base} ({version})")
+    candidates.append(f"{clean_base} (AppImage)")
+    for n in range(2, 20):
+        candidates.append(f"{clean_base} ({n})")
+
+    for cand in candidates:
+        if not has_exact_desktop_name_conflict(cand, paths, search_dirs=search_dirs):
+            return cand
+    return f"{clean_base} (New)"

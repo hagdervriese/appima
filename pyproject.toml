@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "appima"
-version = "0.1.5"
+version = "0.1.6"
 description = "Minimalist AppImage & portable app manager for Linux with native desktop integration and automatic update checks."
 readme = "README.md"
 license = { file = "LICENSE" }

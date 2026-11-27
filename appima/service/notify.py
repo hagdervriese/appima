@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 from appima.core.models import UpdateCheckResult
-from appima.core.runtime import gui_asset_path
+from appima.core.runtime import clean_subprocess_env, gui_asset_path
 
 _ICON_PATH = gui_asset_path("appima.svg")
 
@@ -54,6 +54,7 @@ def notify_updates(updates: list[UpdateCheckResult]) -> bool:
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=clean_subprocess_env(),
             timeout=10,
             check=False,
         )

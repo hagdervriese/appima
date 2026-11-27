@@ -24,6 +24,7 @@ from appima.core.checksum import parse_checksum_input
 from appima.core.manager import AppManager
 from appima.core.models import AppimaError, AppRecord, DesktopConflict, ReleaseInfo
 from appima.formats.appimage import _guess_name_and_version
+from appima.gui.conflict_dialog import ResolveConflictDialog
 from appima.gui.workers import ProgressWorker, TaskWorker
 
 
@@ -263,46 +264,34 @@ class AddAppDialog(QDialog):
         # Pre-flight: resolve candidate name and check for existing similar desktop entries
         self._set_busy(True, "Checking for existing desktop entries…")
 
-        def _preflight() -> list[DesktopConflict]:
+        def _preflight() -> tuple[str, str, list[DesktopConflict]]:
             release = self.manager.preview_source(source, asset_pattern=pattern)
             candidate_name = self._candidate_name_from_release(release)
-            return self.manager.find_conflicting_apps(candidate_name)
+            conflicts = self.manager.find_conflicting_apps(candidate_name)
+            return candidate_name, release.version, conflicts
 
         self._preflight_worker = TaskWorker(_preflight, parent=self)
         self._preflight_worker.finished_ok.connect(self._on_preflight_done)
         self._preflight_worker.failed.connect(self._on_install_error)
         self._preflight_worker.start()
 
-    def _on_preflight_done(self, conflicts: list[DesktopConflict]) -> None:
-        if conflicts and not self._confirm_conflicts(conflicts):
-            self._set_busy(False)
-            return
+    def _on_preflight_done(
+        self, result: tuple[str, str, list[DesktopConflict]]
+    ) -> None:
+        candidate_name, version, conflicts = result
+        if conflicts:
+            dlg = ResolveConflictDialog(
+                self.manager,
+                candidate_name=candidate_name,
+                version=version,
+                conflicts=conflicts,
+                parent=self,
+            )
+            if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.chosen_name:
+                self._set_busy(False)
+                return
+            self.name_edit.setText(dlg.chosen_name)
         self._begin_download_and_install()
-
-    def _confirm_conflicts(self, conflicts: list[DesktopConflict]) -> bool:
-        lines = [
-            f"• {c.name} [{c.source_kind}]\n  {c.desktop_path}"
-            for c in conflicts[:5]
-        ]
-        if len(conflicts) > 5:
-            lines.append(f"• and {len(conflicts) - 5} more…")
-
-        msg = QMessageBox(self)
-        msg.setIcon(QMessageBox.Icon.Warning)
-        msg.setWindowTitle("Similar application already exists")
-        msg.setText(
-            "A desktop launcher entry with the same or a very similar name already exists on your system:"
-        )
-        msg.setInformativeText(
-            "\n".join(lines) + "\n\nDo you want to continue installing anyway?"
-        )
-        install_btn = msg.addButton(
-            "Install Anyway", QMessageBox.ButtonRole.AcceptRole
-        )
-        cancel_btn = msg.addButton(QMessageBox.StandardButton.Cancel)
-        msg.setDefaultButton(cancel_btn)
-        msg.exec()
-        return msg.clickedButton() == install_btn
 
     def _begin_download_and_install(self) -> None:
         source = self.source_edit.text().strip()

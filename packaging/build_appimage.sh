@@ -78,9 +78,9 @@ if command -v unsquashfs >/dev/null 2>&1; then
   done
 
   cat > "${APPDIR}/usr/bin/unsquashfs" <<'EOF'
-#!/usr/bin/env bash
-HERE="$(dirname "$(readlink -f "${0}")")"
-export LD_LIBRARY_PATH="${HERE}/../lib/unsquashfs-libs${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+#!/bin/sh
+HERE="$(dirname "$(readlink -f "$0")")"
+export LD_LIBRARY_PATH="${HERE}/../lib/unsquashfs-libs"
 exec "${HERE}/../lib/unsquashfs-bin/unsquashfs" "$@"
 EOF
   chmod 0755 "${APPDIR}/usr/bin/unsquashfs"
@@ -93,13 +93,13 @@ cp appima/gui/assets/appima.svg "${APPDIR}/appima.svg"
 cp appima/gui/assets/appima.svg "${APPDIR}/.DirIcon"
 cp appima/gui/assets/appima.svg "${APPDIR}/usr/share/icons/hicolor/scalable/apps/appima.svg"
 
-# 4. AppRun entry script
+# 4. AppRun entry script (append bundled usr/bin so native host unsquashfs is preferred)
 cat > "${APPDIR}/AppRun" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-HERE="$(dirname "$(readlink -f "${0}")")"
+#!/bin/sh
+set -eu
+HERE="$(dirname "$(readlink -f "$0")")"
 export APPDIR="${HERE}"
-export PATH="${HERE}/usr/bin:${PATH}"
+export PATH="${PATH}:${HERE}/usr/bin"
 exec "${HERE}/usr/lib/appima/appima-bin" "$@"
 EOF
 chmod 0755 "${APPDIR}/AppRun"

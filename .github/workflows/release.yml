@@ -63,13 +63,35 @@ jobs:
       - name: Build AppImage
         run: bash packaging/build_appimage.sh
 
-      - name: Smoke-test built AppImage (CLI + checksum)
+      - name: Smoke-test built AppImage (CLI, icon extraction, and checksum)
         run: |
           APPIMAGE_BIN="$(ls dist/appima-*.AppImage | head -n 1)"
           "${APPIMAGE_BIN}" --appimage-extract-and-run --version
           "${APPIMAGE_BIN}" --appimage-extract-and-run --help >/dev/null
           "${APPIMAGE_BIN}" --appimage-extract-and-run list
           (cd dist && sha256sum -c SHA256SUMS)
+          # Verify frozen AppImage extracts embedded SquashFS icons cleanly
+          python3 - "${APPIMAGE_BIN}" <<'PY'
+          import os, subprocess, sys, tempfile
+          from pathlib import Path
+          appimage_bin = Path(sys.argv[1]).resolve()
+          with tempfile.TemporaryDirectory() as td:
+              root = Path(td)
+              env = os.environ.copy()
+              env["XDG_CONFIG_HOME"] = str(root / "cfg")
+              env["XDG_DATA_HOME"] = str(root / "data")
+              env["XDG_CACHE_HOME"] = str(root / "cache")
+              subprocess.run([str(appimage_bin), "--appimage-extract-and-run", "config", "--apps-dir", str(root / "Apps")], env=env, check=True)
+              # Install appima AppImage itself into the temp env and confirm its SVG icon is extracted!
+              subprocess.run([str(appimage_bin), "--appimage-extract-and-run", "install", "--force", str(appimage_bin)], env=env, check=True)
+              icons = list((root / "data/appima/icons").glob("*"))
+              assert icons and icons[0].stat().st_size > 100, f"Expected extracted icon, got {icons}"
+              desktops = list((root / "data/applications").glob("appima-*.desktop"))
+              assert desktops, "Missing desktop entry"
+              txt = desktops[0].read_text(encoding="utf-8")
+              assert str(icons[0]) in txt, f"Desktop entry missing extracted icon path:\n{txt}"
+              print("Frozen AppImage icon extraction OK:", icons[0].name, icons[0].stat().st_size, "bytes")
+          PY
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

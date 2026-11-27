@@ -9,7 +9,7 @@ from pathlib import Path
 
 from appima.core.config import AppimaPaths
 from appima.core.models import VALID_CHECK_INTERVALS
-from appima.core.runtime import current_appimage_path
+from appima.core.runtime import clean_subprocess_env, current_appimage_path
 
 SERVICE_NAME = "appima-check.service"
 TIMER_NAME = "appima-check.timer"
@@ -81,6 +81,7 @@ def _run_systemctl(*args: str) -> tuple[bool, str]:
             [systemctl, "--user", *args],
             capture_output=True,
             text=True,
+            env=clean_subprocess_env(),
             timeout=10,
             check=False,
         )

@@ -11,8 +11,10 @@ from appima.core.desktop import (
     MANAGED_MARKER_KEY,
     build_exec_line,
     find_existing_desktop_entries,
+    has_exact_desktop_name_conflict,
     integrate_app,
     remove_integration,
+    suggest_unique_app_name,
 )
 from appima.core.models import AppRecord, ExtractedMetadata
 from appima.formats.appimage import AppImageFormat
@@ -174,6 +176,18 @@ class DesktopAndSystemdTests(unittest.TestCase):
 
             none_found = find_existing_desktop_entries("Blender", paths, search_dirs=dirs)
             self.assertEqual(none_found, [])
+
+            # Exact-name conflict & unique suggestion
+            self.assertIsNotNone(
+                has_exact_desktop_name_conflict("Obsidian", paths, search_dirs=dirs)
+            )
+            self.assertIsNone(
+                has_exact_desktop_name_conflict("Obsidian (1.8.0)", paths, search_dirs=dirs)
+            )
+            self.assertEqual(
+                suggest_unique_app_name("Obsidian", "1.8.0", paths, search_dirs=dirs),
+                "Obsidian (1.8.0)",
+            )
 
 
 if __name__ == "__main__":

@@ -25,6 +25,7 @@ from appima.core.manager import AppManager
 from appima.core.models import AppimaError, AppRecord, UpdateCheckResult
 from appima.core.runtime import SELF_APP_ID, relaunch_appima
 from appima.gui.add_dialog import AddAppDialog
+from appima.gui.conflict_dialog import ResolveConflictDialog
 from appima.gui.details_dialog import AppDetailsDialog
 from appima.gui.settings_dialog import SettingsDialog
 from appima.gui.workers import ProgressWorker, TaskWorker
@@ -531,47 +532,47 @@ class MainWindow(QMainWindow):
         if not unmanaged:
             return
 
-        # Pre-check if any unmanaged AppImage already has a similar desktop entry
-        conflict_lines: list[str] = []
+        # Pre-check each unmanaged AppImage and require a unique name if it conflicts
+        adopt_plan: list[tuple[Path, str]] = []
+        reserved_names: set[str] = set()
         for path in unmanaged:
             try:
                 rel = self.manager.preview_source(str(path))
                 candidate_name = rel.name_hint or path.stem
+                version = rel.version
             except AppimaError:
                 candidate_name = path.stem
-            conflicts = self.manager.find_conflicting_apps(candidate_name)
-            for c in conflicts[:2]:
-                conflict_lines.append(
-                    f"• {path.name} matches \"{c.name}\" [{c.source_kind}]\n  {c.desktop_path}"
-                )
+                version = ""
 
-        if conflict_lines:
-            msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Icon.Warning)
-            msg.setWindowTitle("Similar desktop entry already exists")
-            msg.setText(
-                "One or more apps in your folder already have a similar launcher entry on your system:"
-            )
-            msg.setInformativeText(
-                "\n".join(conflict_lines[:6])
-                + "\n\nDo you want to continue integrating them anyway?"
-            )
-            continue_btn = msg.addButton(
-                "Continue Anyway", QMessageBox.ButtonRole.AcceptRole
-            )
-            cancel_btn = msg.addButton(QMessageBox.StandardButton.Cancel)
-            msg.setDefaultButton(cancel_btn)
-            msg.exec()
-            if msg.clickedButton() != continue_btn:
-                return
+            conflicts = self.manager.find_conflicting_apps(candidate_name)
+            custom_name = ""
+            if conflicts or candidate_name.strip().lower() in reserved_names:
+                dlg = ResolveConflictDialog(
+                    self.manager,
+                    candidate_name=candidate_name,
+                    version=version,
+                    conflicts=conflicts,
+                    reserved_names=reserved_names,
+                    parent=self,
+                )
+                if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.chosen_name:
+                    continue
+                custom_name = dlg.chosen_name
+                reserved_names.add(custom_name.strip().lower())
+            else:
+                reserved_names.add(candidate_name.strip().lower())
+            adopt_plan.append((path, custom_name))
+
+        if not adopt_plan:
+            return
 
         self.adopt_btn.setEnabled(False)
         self.footer_label.setText("Adopting existing AppImages…")
 
         def _do_adopt() -> int:
             count = 0
-            for path in unmanaged:
-                self.manager.install_app(str(path))
+            for path, custom_name in adopt_plan:
+                self.manager.install_app(str(path), custom_name=custom_name)
                 count += 1
             return count
 

@@ -129,6 +129,7 @@ def main(argv: Sequence[str] | None = None, manager: AppManager | None = None) -
             return 0
 
         if args.command == "install":
+            chosen_name = args.name
             if not args.force and sys.stdin.isatty():
                 release = mgr.preview_source(args.source, asset_pattern=args.pattern)
                 candidate = args.name.strip() or release.name_hint or Path(release.filename).stem
@@ -137,15 +138,28 @@ def main(argv: Sequence[str] | None = None, manager: AppManager | None = None) -
                     print("Similar desktop entry already exists on your system:")
                     for c in conflicts[:5]:
                         print(f"  • {c.name} [{c.source_kind}] ({c.desktop_path})")
-                    answer = input("Continue installing anyway? [y/N] ").strip().lower()
-                    if answer not in ("y", "yes"):
-                        print("Installation aborted.")
-                        return 0
+                    suggestion = mgr.suggest_unique_name(candidate, release.version)
+                    while True:
+                        raw = input(
+                            f"Enter a unique launcher name [{suggestion}] (or 'q' to abort): "
+                        ).strip()
+                        if raw.lower() in ("q", "quit", "abort", "n", "no"):
+                            print("Installation aborted.")
+                            return 0
+                        proposed = raw or suggestion
+                        if mgr.has_exact_name_conflict(proposed):
+                            print(
+                                f"Name {proposed!r} is already taken by an existing desktop entry. "
+                                "Please enter a unique name."
+                            )
+                            continue
+                        chosen_name = proposed
+                        break
 
             rec = mgr.install_app(
                 args.source,
                 expected_checksum=args.checksum,
-                custom_name=args.name,
+                custom_name=chosen_name,
                 asset_pattern=args.pattern,
                 progress_cb=_progress_printer if sys.stderr.isatty() else None,
             )

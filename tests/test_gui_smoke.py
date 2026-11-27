@@ -81,14 +81,33 @@ class GuiSmokeTests(unittest.TestCase):
 
             self.assertEqual(opened, [rec.id])
 
-            # Verify Add and Settings dialogs instantiate cleanly (and Settings shows live version)
+            # Verify Add, Settings, and ResolveConflict dialogs instantiate and validate cleanly
             from appima import __version__
+            from appima.gui.conflict_dialog import ResolveConflictDialog
 
             add_dlg = AddAppDialog(mgr, parent=win)
             add_dlg.close()
             settings_dlg = SettingsDialog(mgr, parent=win)
             self.assertIn(__version__, settings_dlg.version_label.text())
             settings_dlg.close()
+
+            conflicts = mgr.find_conflicting_apps(rec.name)
+            conflict_dlg = ResolveConflictDialog(
+                mgr,
+                candidate_name=rec.name,
+                version="2.0.0",
+                conflicts=conflicts,
+                parent=win,
+            )
+            # Suggested unique name is valid
+            self.assertTrue(conflict_dlg.continue_btn.isEnabled())
+            # Typing the exact existing name disables Continue
+            conflict_dlg.name_edit.setText(rec.name)
+            self.assertFalse(conflict_dlg.continue_btn.isEnabled())
+            # Typing a distinct name re-enables Continue
+            conflict_dlg.name_edit.setText(f"{rec.name} 2.0")
+            self.assertTrue(conflict_dlg.continue_btn.isEnabled())
+            conflict_dlg.close()
             win.close()
 
 

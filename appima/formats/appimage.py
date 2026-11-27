@@ -12,7 +12,7 @@ from pathlib import Path
 
 from appima.core.desktop import parse_desktop_metadata
 from appima.core.models import ExtractedMetadata, FormatError
-from appima.core.runtime import current_appdir
+from appima.core.runtime import clean_subprocess_env, current_appdir
 from appima.formats.base import PackageFormat
 
 _ELF_MAGIC = b"\x7fELF"
@@ -165,10 +165,12 @@ class AppImageFormat(PackageFormat):
         fallback_name: str,
         fallback_version: str,
     ) -> ExtractedMetadata:
+        sub_env = clean_subprocess_env()
         list_proc = subprocess.run(
             [unsquashfs, "-o", str(offset), "-l", str(path)],
             capture_output=True,
             text=True,
+            env=sub_env,
             timeout=20,
             check=False,
         )
@@ -213,6 +215,7 @@ class AppImageFormat(PackageFormat):
                     ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    env=sub_env,
                     timeout=20,
                     check=False,
                 )
@@ -245,13 +248,14 @@ class AppImageFormat(PackageFormat):
                     ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    env=sub_env,
                     timeout=20,
                     check=False,
                 )
                 for cand in batch:
                     cand_path = extract_root / cand
                     resolved_bytes, resolved_ext = self._read_extracted_icon(
-                        cand_path, extract_root, path, offset, unsquashfs
+                        cand_path, extract_root, path, offset, unsquashfs, sub_env
                     )
                     if resolved_bytes:
                         icon_bytes = resolved_bytes
@@ -377,6 +381,7 @@ class AppImageFormat(PackageFormat):
         appimage_path: Path,
         offset: int,
         unsquashfs: str,
+        sub_env: dict[str, str] | None = None,
     ) -> tuple[bytes | None, str]:
         """Read an icon file, following multi-hop symlinks inside the SquashFS."""
         root_resolved = extract_root.resolve()
@@ -415,6 +420,7 @@ class AppImageFormat(PackageFormat):
                     ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    env=sub_env,
                     timeout=15,
                     check=False,
                 )
