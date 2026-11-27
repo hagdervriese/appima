@@ -12,6 +12,7 @@ from appima.core.models import (
     ProviderError,
     ReleaseInfo,
     RemovalPlan,
+    UnmanagedPreview,
     UpdateCheckResult,
 )
 
@@ -27,5 +28,6 @@ __all__ = [
     "ProviderError",
     "ReleaseInfo",
     "RemovalPlan",
+    "UnmanagedPreview",
     "UpdateCheckResult",
 ]

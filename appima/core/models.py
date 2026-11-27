@@ -198,3 +198,18 @@ class RemovalPlan:
     flatpak_scope: str = "--user"
     managed_app_id: str = ""
     reason: str = ""
+
+
+@dataclass
+class UnmanagedPreview:
+    """Inspection preview for an unmanaged AppImage or portable folder in apps_dir."""
+
+    path: Path
+    format_id: str
+    name: str
+    version: str
+    exec_path: str = ""
+    size_bytes: int | None = None
+    icon_bytes: bytes | None = None
+    icon_ext: str = ""
+    conflicts: list[DesktopConflict] = field(default_factory=list)

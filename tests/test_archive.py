@@ -308,6 +308,12 @@ class ArchiveFormatTests(unittest.TestCase):
             unmanaged = mgr.scan_unmanaged()
             self.assertEqual(unmanaged, [app_folder])
 
+            preview = mgr.inspect_unmanaged(app_folder)
+            self.assertEqual(preview.name, "GravityDesktop")
+            self.assertEqual(preview.version, "0.9.5")
+            self.assertEqual(Path(preview.exec_path).resolve(), bin_path.resolve())
+            self.assertEqual(mgr.list_apps(), [])  # inspect must not modify DB
+
             adopted = mgr.install_app(str(app_folder))
             self.assertEqual(Path(adopted.install_path).resolve(), app_folder.resolve())
             self.assertEqual(Path(adopted.exec_path).resolve(), bin_path.resolve())

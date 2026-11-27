@@ -81,9 +81,11 @@ class GuiSmokeTests(unittest.TestCase):
 
             self.assertEqual(opened, [rec.id])
 
-            # Verify Add, Settings, and ResolveConflict dialogs instantiate and validate cleanly
+            # Verify Add, Settings, ResolveConflict, and UnmanagedDetails dialogs
             from appima import __version__
             from appima.gui.conflict_dialog import ResolveConflictDialog
+            from appima.gui.main_window import UnmanagedRowWidget
+            from appima.gui.unmanaged_dialog import UnmanagedDetailsDialog
 
             add_dlg = AddAppDialog(mgr, parent=win)
             add_dlg.close()
@@ -108,6 +110,22 @@ class GuiSmokeTests(unittest.TestCase):
             conflict_dlg.name_edit.setText(f"{rec.name} 2.0")
             self.assertTrue(conflict_dlg.continue_btn.isEnabled())
             conflict_dlg.close()
+
+            # Add an unmanaged AppImage in Apps folder and verify row + inspection dialog
+            unmanaged_ai = root / "Apps" / "ExtraTool-1.0.AppImage"
+            unmanaged_ai.write_bytes(b"\x7fELF\x02\x01\x01" + b"\x00" * 57 + b"abc" * 16)
+            win.refresh_apps()
+            widgets = [
+                win.list_layout.itemAt(i).widget()
+                for i in range(win.list_layout.count())
+                if win.list_layout.itemAt(i).widget() is not None
+            ]
+            u_rows = [w for w in widgets if isinstance(w, UnmanagedRowWidget)]
+            self.assertEqual(len(u_rows), 1)
+            preview = mgr.inspect_unmanaged(unmanaged_ai)
+            u_dlg = UnmanagedDetailsDialog(preview, parent=win)
+            self.assertIn(preview.name, u_dlg.windowTitle())
+            u_dlg.close()
             win.close()
 
 

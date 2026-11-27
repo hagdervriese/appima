@@ -22,12 +22,18 @@ from PySide6.QtWidgets import (
 )
 
 from appima.core.manager import AppManager
-from appima.core.models import AppimaError, AppRecord, UpdateCheckResult
+from appima.core.models import (
+    AppimaError,
+    AppRecord,
+    UnmanagedPreview,
+    UpdateCheckResult,
+)
 from appima.core.runtime import SELF_APP_ID, relaunch_appima
 from appima.gui.add_dialog import AddAppDialog
 from appima.gui.conflict_dialog import ResolveConflictDialog
 from appima.gui.details_dialog import AppDetailsDialog
 from appima.gui.settings_dialog import SettingsDialog
+from appima.gui.unmanaged_dialog import UnmanagedDetailsDialog
 from appima.gui.workers import ProgressWorker, TaskWorker
 from appima.service.systemd import sync_update_timer
 
@@ -157,6 +163,108 @@ class AppRowWidget(QFrame):
         super().mouseDoubleClickEvent(event)
 
 
+class UnmanagedRowWidget(QFrame):
+    """Clean row for an unmanaged AppImage or portable folder sitting in ~/Apps."""
+
+    details_requested = Signal(str)
+    adopt_requested = Signal(str)
+
+    def __init__(self, path: Path, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.item_path = path
+        self.setObjectName("UnmanagedRow")
+        self.setStyleSheet(
+            """
+            QFrame#UnmanagedRow {
+                border: 1px dashed palette(mid);
+                border-radius: 10px;
+                background: palette(alternate-base);
+            }
+            QFrame#UnmanagedRow:hover {
+                border-color: palette(highlight);
+            }
+            """
+        )
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(10)
+
+        icon_lbl = QLabel()
+        icon_lbl.setFixedSize(40, 40)
+        is_dir = path.is_dir()
+        icon = QIcon.fromTheme(
+            "folder-applications" if is_dir else "application-x-executable",
+            QIcon.fromTheme("application-x-executable"),
+        )
+        icon_lbl.setPixmap(icon.pixmap(40, 40))
+        layout.addWidget(icon_lbl)
+
+        info = QVBoxLayout()
+        info.setSpacing(2)
+        name_lbl = QLabel(path.name)
+        name_lbl.setStyleSheet("font-size: 14px; font-weight: 600;")
+        info.addWidget(name_lbl)
+
+        if is_dir:
+            subtitle = "Portable folder · not managed yet"
+        else:
+            try:
+                mb = path.stat().st_size / (1024 * 1024)
+                subtitle = f"AppImage · {mb:.1f} MiB · not managed yet"
+            except OSError:
+                subtitle = "AppImage · not managed yet"
+        meta_lbl = QLabel(subtitle)
+        meta_lbl.setStyleSheet("font-size: 12px; color: palette(placeholder-text);")
+        info.addWidget(meta_lbl)
+        layout.addLayout(info, 1)
+
+        self.details_btn = QPushButton("Details", self)
+        self.details_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.details_btn.setFlat(True)
+        self.details_btn.setStyleSheet(
+            """
+            QPushButton {
+                padding: 6px 10px;
+                border-radius: 6px;
+            }
+            QPushButton:hover {
+                background: palette(base);
+            }
+            """
+        )
+        self.details_btn.clicked.connect(
+            lambda _checked=False, p=str(path): self.details_requested.emit(p)
+        )
+        layout.addWidget(self.details_btn)
+
+        self.adopt_btn = QPushButton("Adopt", self)
+        self.adopt_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.adopt_btn.setStyleSheet(
+            """
+            QPushButton {
+                border: 1px solid palette(highlight);
+                border-radius: 6px;
+                padding: 5px 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background: palette(highlight);
+                color: palette(highlighted-text);
+            }
+            """
+        )
+        self.adopt_btn.clicked.connect(
+            lambda _checked=False, p=str(path): self.adopt_requested.emit(p)
+        )
+        layout.addWidget(self.adopt_btn)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.details_requested.emit(str(self.item_path))
+        super().mouseDoubleClickEvent(event)
+
+
 class MainWindow(QMainWindow):
     """Single-screen AppImage Manager with 3 header controls and zero clutter."""
 
@@ -166,6 +274,7 @@ class MainWindow(QMainWindow):
         self._check_worker: TaskWorker | None = None
         self._update_worker: ProgressWorker | None = None
         self._adopt_worker: TaskWorker | None = None
+        self._inspect_worker: TaskWorker | None = None
         self._self_integrate_worker: TaskWorker | None = None
 
         self.setWindowTitle("appima")
@@ -235,23 +344,7 @@ class MainWindow(QMainWindow):
         self.self_banner.setVisible(False)
         root.addWidget(self.self_banner)
 
-        # Optional banner when unmanaged AppImages are sitting in ~/Apps
-        self.unmanaged_banner = QFrame()
-        self.unmanaged_banner.setFrameShape(QFrame.Shape.StyledPanel)
-        self.unmanaged_banner.setStyleSheet(
-            "QFrame { border: 1px solid palette(mid); border-radius: 8px; background: palette(alternate-base); }"
-        )
-        banner_layout = QHBoxLayout(self.unmanaged_banner)
-        banner_layout.setContentsMargins(12, 8, 12, 8)
-        self.unmanaged_label = QLabel("")
-        banner_layout.addWidget(self.unmanaged_label, 1)
-        self.adopt_btn = QPushButton("Adopt")
-        self.adopt_btn.clicked.connect(self._adopt_unmanaged)
-        banner_layout.addWidget(self.adopt_btn)
-        self.unmanaged_banner.setVisible(False)
-        root.addWidget(self.unmanaged_banner)
-
-        # Scrollable list of managed apps
+        # Scrollable list of managed (and any unmanaged) apps
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -280,7 +373,10 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
 
         apps = self.manager.list_apps()
-        if not apps:
+        unmanaged = self.manager.scan_unmanaged()
+        insert_idx = 0
+
+        if not apps and not unmanaged:
             empty = QLabel(
                 f"No managed apps yet.\n\n"
                 f"Click \"+ Add App\" to install an AppImage or portable archive into {self.manager.config.apps_dir}."
@@ -291,12 +387,31 @@ class MainWindow(QMainWindow):
             )
             self.list_layout.insertWidget(0, empty)
         else:
-            for idx, rec in enumerate(apps):
+            for rec in apps:
                 row = AppRowWidget(rec, parent=self.list_container)
                 row.details_requested.connect(self._open_details)
                 row.update_requested.connect(self._start_update)
                 row.uninstall_requested.connect(self._confirm_uninstall)
-                self.list_layout.insertWidget(idx, row)
+                self.list_layout.insertWidget(insert_idx, row)
+                insert_idx += 1
+
+            if unmanaged:
+                section_lbl = QLabel(
+                    f"Unmanaged in {self.manager.config.apps_dir.name} ({len(unmanaged)})"
+                )
+                section_lbl.setStyleSheet(
+                    "font-size: 11px; font-weight: 600; color: palette(placeholder-text); "
+                    "padding-top: 10px; padding-left: 2px;"
+                )
+                self.list_layout.insertWidget(insert_idx, section_lbl)
+                insert_idx += 1
+
+                for path in unmanaged:
+                    u_row = UnmanagedRowWidget(path, parent=self.list_container)
+                    u_row.details_requested.connect(self._inspect_unmanaged_item)
+                    u_row.adopt_requested.connect(self._adopt_single_unmanaged)
+                    self.list_layout.insertWidget(insert_idx, u_row)
+                    insert_idx += 1
 
         # Offer one-click self-integration when running as an unintegrated AppImage
         if self.manager.needs_self_integration():
@@ -307,19 +422,9 @@ class MainWindow(QMainWindow):
         else:
             self.self_banner.setVisible(False)
 
-        # Check for unmanaged AppImages or portable app folders already sitting in apps_dir
-        unmanaged = self.manager.scan_unmanaged()
-        if unmanaged:
-            noun = "app" if len(unmanaged) == 1 else "apps"
-            self.unmanaged_label.setText(
-                f"{len(unmanaged)} unmanaged portable {noun} found in {self.manager.config.apps_dir}"
-            )
-            self.unmanaged_banner.setVisible(True)
-        else:
-            self.unmanaged_banner.setVisible(False)
-
+        unmanaged_part = f" · {len(unmanaged)} unmanaged" if unmanaged else ""
         self.footer_label.setText(
-            f"{len(apps)} managed · Folder: {self.manager.config.apps_dir}"
+            f"{len(apps)} managed{unmanaged_part} · Folder: {self.manager.config.apps_dir}"
         )
 
     def _open_add_dialog(self) -> None:
@@ -527,68 +632,76 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Update failed", message)
         self.refresh_apps()
 
-    def _adopt_unmanaged(self) -> None:
-        unmanaged = self.manager.scan_unmanaged()
-        if not unmanaged:
+    def _inspect_unmanaged_item(self, raw_path: str) -> None:
+        if self._inspect_worker and self._inspect_worker.isRunning():
+            return
+        self.footer_label.setText(f"Inspecting {Path(raw_path).name}…")
+        self._inspect_worker = TaskWorker(
+            lambda p=raw_path: self.manager.inspect_unmanaged(p), parent=self
+        )
+        self._inspect_worker.finished_ok.connect(self._on_inspect_unmanaged_done)
+        self._inspect_worker.failed.connect(self._on_inspect_unmanaged_error)
+        self._inspect_worker.start()
+
+    def _on_inspect_unmanaged_done(self, preview: UnmanagedPreview) -> None:
+        try:
+            dlg = UnmanagedDetailsDialog(preview, parent=self)
+            dlg.exec()
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            QMessageBox.critical(
+                self, "Could not inspect app", f"Unexpected error:\n{exc}"
+            )
+        finally:
+            self.refresh_apps()
+
+    def _on_inspect_unmanaged_error(self, message: str) -> None:
+        QMessageBox.warning(self, "Could not inspect app", message)
+        self.refresh_apps()
+
+    def _adopt_single_unmanaged(self, raw_path: str) -> None:
+        if self._adopt_worker and self._adopt_worker.isRunning():
+            return
+        path = Path(raw_path)
+        self.footer_label.setText(f"Inspecting {path.name}…")
+        try:
+            preview = self.manager.inspect_unmanaged(path)
+        except AppimaError as exc:
+            QMessageBox.warning(self, "Could not inspect app", str(exc))
+            self.refresh_apps()
             return
 
-        # Pre-check each unmanaged AppImage and require a unique name if it conflicts
-        adopt_plan: list[tuple[Path, str]] = []
-        reserved_names: set[str] = set()
-        for path in unmanaged:
-            try:
-                rel = self.manager.preview_source(str(path))
-                candidate_name = rel.name_hint or path.stem
-                version = rel.version
-            except AppimaError:
-                candidate_name = path.stem
-                version = ""
+        custom_name = ""
+        if preview.conflicts:
+            dlg = ResolveConflictDialog(
+                self.manager,
+                candidate_name=preview.name,
+                version=preview.version,
+                conflicts=preview.conflicts,
+                parent=self,
+            )
+            if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.chosen_name:
+                self.refresh_apps()
+                return
+            custom_name = dlg.chosen_name
 
-            conflicts = self.manager.find_conflicting_apps(candidate_name)
-            custom_name = ""
-            if conflicts or candidate_name.strip().lower() in reserved_names:
-                dlg = ResolveConflictDialog(
-                    self.manager,
-                    candidate_name=candidate_name,
-                    version=version,
-                    conflicts=conflicts,
-                    reserved_names=reserved_names,
-                    parent=self,
-                )
-                if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.chosen_name:
-                    if dlg.removed_any:
-                        self.refresh_apps()
-                    continue
-                custom_name = dlg.chosen_name
-                reserved_names.add(custom_name.strip().lower())
-            else:
-                reserved_names.add(candidate_name.strip().lower())
-            adopt_plan.append((path, custom_name))
-
-        if not adopt_plan:
-            return
-
-        self.adopt_btn.setEnabled(False)
-        self.footer_label.setText("Adopting existing AppImages…")
-
-        def _do_adopt() -> int:
-            count = 0
-            for path, custom_name in adopt_plan:
-                self.manager.install_app(str(path), custom_name=custom_name)
-                count += 1
-            return count
-
-        self._adopt_worker = TaskWorker(_do_adopt, parent=self)
+        self.footer_label.setText(f"Adopting {custom_name or preview.name}…")
+        self._adopt_worker = TaskWorker(
+            lambda p=str(path), n=custom_name: self.manager.install_app(
+                p, custom_name=n
+            ),
+            parent=self,
+        )
         self._adopt_worker.finished_ok.connect(self._on_adopt_done)
         self._adopt_worker.failed.connect(self._on_adopt_error)
         self._adopt_worker.start()
 
-    def _on_adopt_done(self, count: int) -> None:
-        self.adopt_btn.setEnabled(True)
+    def _on_adopt_done(self, record: AppRecord) -> None:
         self.refresh_apps()
-        self.footer_label.setText(f"Adopted {count} AppImage(s) into appima.")
+        self.footer_label.setText(
+            f"Adopted {record.name} ({record.installed_version}) into appima."
+        )
 
     def _on_adopt_error(self, message: str) -> None:
-        self.adopt_btn.setEnabled(True)
         QMessageBox.warning(self, "Adoption failed", message)
         self.refresh_apps()

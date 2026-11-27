@@ -32,6 +32,7 @@ from appima.core.models import (
     ProviderError,
     ReleaseInfo,
     RemovalPlan,
+    UnmanagedPreview,
     UpdateCheckResult,
 )
 from appima.core.runtime import (
@@ -413,6 +414,37 @@ class AppManager:
             ):
                 unmanaged.append(candidate)
         return unmanaged
+
+    def inspect_unmanaged(self, path: Path | str) -> UnmanagedPreview:
+        """Safely inspect an unmanaged AppImage or portable folder before adopting it."""
+        target = Path(path).expanduser().resolve()
+        if not target.exists():
+            raise AppimaError(f"Path no longer exists: {target}")
+
+        fmt = self._resolve_format(target)
+        metadata = fmt.inspect(target)
+        version = normalize_version(metadata.version_hint) if metadata.version_hint else "local"
+
+        exec_path = str(target)
+        if fmt.format_id == "archive" and metadata.exec_relpath:
+            cand = target / metadata.exec_relpath
+            if cand.is_file():
+                exec_path = str(cand)
+
+        size_bytes = target.stat().st_size if target.is_file() else None
+        conflicts = self.find_conflicting_apps(metadata.name)
+
+        return UnmanagedPreview(
+            path=target,
+            format_id=fmt.format_id,
+            name=metadata.name,
+            version=version,
+            exec_path=exec_path,
+            size_bytes=size_bytes,
+            icon_bytes=metadata.icon_bytes,
+            icon_ext=metadata.icon_ext,
+            conflicts=conflicts,
+        )
 
     def check_update(self, app_id: str) -> UpdateCheckResult:
         """Check upstream for a single managed app and persist any discovered update."""
