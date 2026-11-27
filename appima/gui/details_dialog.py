@@ -118,6 +118,18 @@ class AppDetailsDialog(QDialog):
         self.name_edit = QLineEdit(self.record.name)
         edit_form.addRow("Display name", self.name_edit)
 
+        self.exec_edit: QLineEdit | None = None
+        if self.record.format == "archive":
+            exec_row = QHBoxLayout()
+            exec_row.setSpacing(6)
+            self.exec_edit = QLineEdit(self.record.effective_exec_path)
+            self.exec_edit.setPlaceholderText("Path to launch executable inside app folder")
+            exec_row.addWidget(self.exec_edit, 1)
+            browse_exec_btn = QPushButton("Browse…")
+            browse_exec_btn.clicked.connect(self._choose_executable)
+            exec_row.addWidget(browse_exec_btn)
+            edit_form.addRow("Executable", exec_row)
+
         self.source_edit = QLineEdit(self.record.source_url)
         self.source_edit.setPlaceholderText("GitHub repo URL or direct download URL")
         edit_form.addRow("Update source", self.source_edit)
@@ -203,6 +215,23 @@ class AppDetailsDialog(QDialog):
         lbl.setWordWrap(True)
         return lbl
 
+    def _choose_executable(self) -> None:
+        if not self.exec_edit:
+            return
+        start_dir = (
+            self.record.install_path
+            if Path(self.record.install_path).is_dir()
+            else str(Path.home())
+        )
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Launch Executable",
+            start_dir,
+            "All Files (*)",
+        )
+        if path:
+            self.exec_edit.setText(path)
+
     def _save(self) -> None:
         try:
             self.record = self.manager.update_app_settings(
@@ -211,6 +240,7 @@ class AppDetailsDialog(QDialog):
                 source_url=self.source_edit.text(),
                 launch_args=self.args_edit.text(),
                 env_vars=self.env_edit.text(),
+                exec_path=self.exec_edit.text() if self.exec_edit else None,
                 custom_icon_file=self._pending_icon_file,
                 reextract_icon=self._reextract_icon,
             )

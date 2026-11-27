@@ -143,16 +143,19 @@ class AppManager:
         """Resolve source metadata without downloading or installing anything."""
         provider = self._resolve_provider(source)
         release = provider.resolve_latest(source, asset_pattern=asset_pattern)
-        # For local AppImages, inspect real display name safely without executing
+        # For local AppImages and already-extracted folders, inspect real display name safely
         if provider.provider_id == "local":
             local_path = Path(release.download_url)
             try:
                 fmt = self._resolve_format(local_path)
-                meta = fmt.inspect(local_path)
-                if meta.name:
-                    release.name_hint = meta.name
-                if release.version in ("", "local", "unknown") and meta.version_hint:
-                    release.version = normalize_version(meta.version_hint)
+                # Avoid extracting huge compressed archives twice during preview;
+                # inspect directories and AppImages immediately.
+                if fmt.format_id == "appimage" or local_path.is_dir():
+                    meta = fmt.inspect(local_path)
+                    if meta.name:
+                        release.name_hint = meta.name
+                    if release.version in ("", "local", "unknown") and meta.version_hint:
+                        release.version = normalize_version(meta.version_hint)
             except AppimaError:
                 pass
         return release
@@ -247,38 +250,64 @@ class AppManager:
                 )
 
             checksum_algo = "sha256"
+            checksum_value = ""
             checksum_verified = False
-            if checksum_input:
-                ok, actual, expected, algo = verify_file_hash(staged_path, checksum_input)
-                if not ok:
-                    raise ChecksumMismatchError(expected, actual, algo)
-                checksum_algo = algo
-                checksum_value = actual
-                checksum_verified = True
-            else:
-                checksum_value = compute_file_hash(staged_path, "sha256")
+            if staged_path.is_file():
+                if checksum_input:
+                    ok, actual, expected, algo = verify_file_hash(staged_path, checksum_input)
+                    if not ok:
+                        raise ChecksumMismatchError(expected, actual, algo)
+                    checksum_algo = algo
+                    checksum_value = actual
+                    checksum_verified = True
+                else:
+                    checksum_value = compute_file_hash(staged_path, "sha256")
+            elif checksum_input:
+                raise AppimaError("Cannot verify a file checksum against a directory.")
 
             fmt = self._resolve_format(staged_path)
-            metadata = fmt.inspect(staged_path)
 
-            app_name = (
-                custom_name.strip()
-                or metadata.name
-                or release.name_hint
-                or staged_path.stem
-            )
-            app_id = self._unique_app_id(app_name)
+            if fmt.format_id == "archive" and staged_path.is_file():
+                # Extract archive once into apps_dir, then inspect the extracted directory
+                preliminary_name = (
+                    custom_name.strip()
+                    or release.name_hint
+                    or staged_path.stem
+                )
+                app_id = self._unique_app_id(preliminary_name)
+                installed_path = fmt.install_file(
+                    staged_path,
+                    self.config.apps_dir,
+                    app_id,
+                    in_place=False,
+                )
+                metadata = fmt.inspect(installed_path)
+                app_name = custom_name.strip() or metadata.name or preliminary_name
+            else:
+                metadata = fmt.inspect(staged_path)
+                app_name = (
+                    custom_name.strip()
+                    or metadata.name
+                    or release.name_hint
+                    or staged_path.stem
+                )
+                app_id = self._unique_app_id(app_name)
+                installed_path = fmt.install_file(
+                    staged_path,
+                    self.config.apps_dir,
+                    app_id,
+                    in_place=in_place,
+                )
 
             version = release.version
             if version in ("", "local", "unknown") and metadata.version_hint:
                 version = normalize_version(metadata.version_hint)
 
-            installed_path = fmt.install_file(
-                staged_path,
-                self.config.apps_dir,
-                app_id,
-                in_place=in_place,
-            )
+            exec_path = ""
+            if fmt.format_id == "archive" and metadata.exec_relpath:
+                exec_candidate = installed_path / metadata.exec_relpath
+                if exec_candidate.is_file():
+                    exec_path = str(exec_candidate)
 
             now = _utc_now()
             record = AppRecord(
@@ -290,6 +319,7 @@ class AppManager:
                 asset_pattern=asset_pattern.strip(),
                 installed_version=version,
                 install_path=str(installed_path),
+                exec_path=exec_path,
                 checksum_algo=checksum_algo,
                 checksum_value=checksum_value,
                 checksum_verified=checksum_verified,
@@ -314,7 +344,7 @@ class AppManager:
                 staged_path.unlink(missing_ok=True)
 
     def scan_unmanaged(self) -> list[Path]:
-        """Return .AppImage files inside apps_dir that are not yet tracked by appima."""
+        """Return unmanaged AppImages and portable app folders inside apps_dir."""
         apps_dir = self.config.apps_dir.expanduser()
         if not apps_dir.is_dir():
             return []
@@ -328,11 +358,15 @@ class AppManager:
 
         unmanaged: list[Path] = []
         for candidate in sorted(apps_dir.iterdir()):
-            if not candidate.is_file() or candidate.name.startswith("."):
+            if candidate.name.startswith("."):
                 continue
-            if candidate.suffix.lower() != ".appimage":
+            if candidate.resolve() in managed_paths:
                 continue
-            if candidate.resolve() not in managed_paths:
+            if candidate.is_file() and candidate.suffix.lower() == ".appimage":
+                unmanaged.append(candidate)
+            elif candidate.is_dir() and ArchiveFormat.looks_like_portable_app_dir(
+                candidate
+            ):
                 unmanaged.append(candidate)
         return unmanaged
 
@@ -478,48 +512,76 @@ class AppManager:
                 checksum_value = compute_file_hash(staged_path, "sha256")
 
             fmt = self._format_by_id(record.format)
-            metadata = fmt.inspect(staged_path)
-
-            # Back up current installed binary before replacing
             current_path = Path(record.install_path)
-            if self.config.keep_backup and current_path.is_file():
-                self.paths.backups_dir.mkdir(parents=True, exist_ok=True)
-                # Remove older backup for this app
-                if record.backup_path:
-                    Path(record.backup_path).unlink(missing_ok=True)
-                safe_ver = slugify_app_id(record.installed_version or "prev")
-                backup_file = self.paths.backups_dir / f"{record.id}-{safe_ver}.AppImage"
-                shutil.copy2(current_path, backup_file)
-                record.backup_path = str(backup_file)
-                record.backup_version = record.installed_version
-
-            # Swap binary cleanly into canonical <apps_dir>/<id>.AppImage (removing any old versioned filename)
             apps_dir = self.config.apps_dir.expanduser().resolve()
             apps_dir.mkdir(parents=True, exist_ok=True)
-            canonical_path = apps_dir / f"{record.id}.AppImage"
-            try:
-                in_apps_dir = current_path.expanduser().resolve().parent == apps_dir
-            except OSError:
-                in_apps_dir = False
 
-            target_path = canonical_path if in_apps_dir else current_path
-            target_dir = target_path.parent
-            target_dir.mkdir(parents=True, exist_ok=True)
-            tmp_target = target_dir / f".{target_path.name}.updating"
-            shutil.copy2(staged_path, tmp_target)
-            tmp_target.chmod(0o755)
-            tmp_target.replace(target_path)
+            if record.format == "archive":
+                # Back up existing directory before replacing
+                if self.config.keep_backup and current_path.is_dir():
+                    self.paths.backups_dir.mkdir(parents=True, exist_ok=True)
+                    if record.backup_path:
+                        bp = Path(record.backup_path)
+                        if bp.is_dir():
+                            shutil.rmtree(bp, ignore_errors=True)
+                        else:
+                            bp.unlink(missing_ok=True)
+                    safe_ver = slugify_app_id(record.installed_version or "prev")
+                    backup_dir = self.paths.backups_dir / f"{record.id}-{safe_ver}"
+                    if backup_dir.exists():
+                        shutil.rmtree(backup_dir)
+                    shutil.copytree(current_path, backup_dir, symlinks=True)
+                    record.backup_path = str(backup_dir)
+                    record.backup_version = record.installed_version
 
-            # Delete old versioned file inside apps_dir if canonicalized
-            try:
-                if current_path.resolve() != target_path.resolve() and current_path.is_file():
-                    current_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+                target_path = fmt.install_file(
+                    staged_path, apps_dir, record.id, in_place=False
+                )
+                try:
+                    if current_path.resolve() != target_path.resolve() and current_path.is_dir():
+                        shutil.rmtree(current_path, ignore_errors=True)
+                except OSError:
+                    pass
+                metadata = fmt.inspect(target_path)
+                if metadata.exec_relpath and (target_path / metadata.exec_relpath).is_file():
+                    record.exec_path = str(target_path / metadata.exec_relpath)
+            else:
+                metadata = fmt.inspect(staged_path)
 
-            # Clean up any leftover old appima-*.AppImage copies in apps_dir during self-update
-            if record.id == SELF_APP_ID:
-                self._cleanup_stale_self_appimages(apps_dir, keep_path=target_path)
+                # Back up current installed binary before replacing
+                if self.config.keep_backup and current_path.is_file():
+                    self.paths.backups_dir.mkdir(parents=True, exist_ok=True)
+                    if record.backup_path:
+                        Path(record.backup_path).unlink(missing_ok=True)
+                    safe_ver = slugify_app_id(record.installed_version or "prev")
+                    backup_file = self.paths.backups_dir / f"{record.id}-{safe_ver}.AppImage"
+                    shutil.copy2(current_path, backup_file)
+                    record.backup_path = str(backup_file)
+                    record.backup_version = record.installed_version
+
+                # Swap binary cleanly into canonical <apps_dir>/<id>.AppImage
+                canonical_path = apps_dir / f"{record.id}.AppImage"
+                try:
+                    in_apps_dir = current_path.expanduser().resolve().parent == apps_dir
+                except OSError:
+                    in_apps_dir = False
+
+                target_path = canonical_path if in_apps_dir else current_path
+                target_dir = target_path.parent
+                target_dir.mkdir(parents=True, exist_ok=True)
+                tmp_target = target_dir / f".{target_path.name}.updating"
+                shutil.copy2(staged_path, tmp_target)
+                tmp_target.chmod(0o755)
+                tmp_target.replace(target_path)
+
+                try:
+                    if current_path.resolve() != target_path.resolve() and current_path.is_file():
+                        current_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+                if record.id == SELF_APP_ID:
+                    self._cleanup_stale_self_appimages(apps_dir, keep_path=target_path)
 
             now = _utc_now()
             record.install_path = str(target_path)
@@ -562,22 +624,39 @@ class AppManager:
         install_path = Path(record.install_path)
         install_path.parent.mkdir(parents=True, exist_ok=True)
 
-        tmp_target = install_path.parent / f".{install_path.name}.rollback"
-        shutil.copy2(backup_path, tmp_target)
-        tmp_target.chmod(0o755)
-        tmp_target.replace(install_path)
-        backup_path.unlink(missing_ok=True)
+        if backup_path.is_dir():
+            tmp_target = install_path.parent / f".{install_path.name}.rollback"
+            if tmp_target.exists():
+                shutil.rmtree(tmp_target)
+            shutil.copytree(backup_path, tmp_target, symlinks=True)
+            if install_path.is_dir():
+                shutil.rmtree(install_path)
+            else:
+                install_path.unlink(missing_ok=True)
+            tmp_target.replace(install_path)
+            shutil.rmtree(backup_path, ignore_errors=True)
+            record.checksum_value = ""
+        else:
+            tmp_target = install_path.parent / f".{install_path.name}.rollback"
+            shutil.copy2(backup_path, tmp_target)
+            tmp_target.chmod(0o755)
+            tmp_target.replace(install_path)
+            backup_path.unlink(missing_ok=True)
+            record.checksum_algo = "sha256"
+            record.checksum_value = compute_file_hash(install_path, "sha256")
 
         record.installed_version = record.backup_version or "previous"
         record.backup_path = ""
         record.backup_version = ""
-        record.checksum_algo = "sha256"
-        record.checksum_value = compute_file_hash(install_path, "sha256")
         record.checksum_verified = False
         record.updated_at = _utc_now()
 
         fmt = self._format_by_id(record.format)
         metadata = fmt.inspect(install_path)
+        if record.format == "archive" and metadata.exec_relpath:
+            cand = install_path / metadata.exec_relpath
+            if cand.is_file():
+                record.exec_path = str(cand)
         desktop_path, icon_path = integrate_app(
             record, metadata, self.paths, refresh_cache=self.refresh_desktop
         )
@@ -596,6 +675,7 @@ class AppManager:
         env_vars: str | None = None,
         source_url: str | None = None,
         asset_pattern: str | None = None,
+        exec_path: str | None = None,
         custom_icon_file: Path | str | None = None,
         reextract_icon: bool = False,
     ) -> AppRecord:
@@ -610,6 +690,13 @@ class AppManager:
             record.launch_args = launch_args.strip()
         if env_vars is not None:
             record.env_vars = env_vars.strip()
+        if exec_path is not None and record.format == "archive":
+            cleaned_exec = exec_path.strip()
+            if cleaned_exec:
+                exec_file = Path(cleaned_exec).expanduser()
+                if not exec_file.is_file():
+                    raise AppimaError(f"Executable not found: {exec_file}")
+                record.exec_path = str(exec_file)
         if source_url is not None:
             cleaned_url = source_url.strip()
             record.source_url = cleaned_url
@@ -685,7 +772,11 @@ class AppManager:
             install_path.unlink(missing_ok=True)
 
         if record.backup_path:
-            Path(record.backup_path).unlink(missing_ok=True)
+            bp = Path(record.backup_path)
+            if bp.is_dir():
+                shutil.rmtree(bp, ignore_errors=True)
+            else:
+                bp.unlink(missing_ok=True)
 
         self.db.delete_app(app_id)
 

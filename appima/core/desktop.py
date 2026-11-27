@@ -180,13 +180,14 @@ def integrate_app(
         if metadata.desktop_content
         else "%U"
     )
+    exec_target = record.effective_exec_path
     entry["Exec"] = build_exec_line(
-        record.install_path,
+        exec_target,
         launch_args=record.launch_args,
         env_vars=record.env_vars,
         field_code=field_code,
     )
-    entry["TryExec"] = str(record.install_path)
+    entry["TryExec"] = str(exec_target)
     entry["Icon"] = str(icon_path) if icon_path else "application-x-executable"
     entry[MANAGED_MARKER_KEY] = "true"
     entry[MANAGED_ID_KEY] = record.id

@@ -68,8 +68,21 @@ def is_newer_version(installed: str, candidate: str) -> bool:
 def extract_version_from_filename(filename: str) -> str:
     """Extract a version token from a release filename, or empty string if none."""
     stem = filename
-    if stem.lower().endswith(".appimage"):
-        stem = stem[: -len(".appimage")]
+    low = stem.lower()
+    for suffix in (
+        ".appimage",
+        ".tar.gz",
+        ".tgz",
+        ".tar.xz",
+        ".txz",
+        ".tar.bz2",
+        ".tbz2",
+        ".tar",
+        ".zip",
+    ):
+        if low.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
     cleaned = _ARCH_OS_STRIP_RE.sub("", stem)
     match = _VERSION_RE.search(cleaned)
     return normalize_version(match.group(1)) if match else ""

@@ -102,6 +102,7 @@ class ExtractedMetadata:
     wm_class: str = ""
     terminal: bool = False
     version_hint: str = ""
+    exec_relpath: str = ""
 
 
 @dataclass
@@ -110,11 +111,12 @@ class AppRecord:
 
     id: str
     name: str
-    format: str  # "appimage" (future: "archive")
+    format: str  # "appimage" or "archive"
     provider: str  # "github", "direct_url", "local"
     source_url: str
     installed_version: str
     install_path: str
+    exec_path: str = ""
     asset_pattern: str = ""
     available_version: str = ""
     available_download_url: str = ""
@@ -136,6 +138,10 @@ class AppRecord:
     installed_at: str = ""
     updated_at: str = ""
     last_checked_at: str = ""
+
+    @property
+    def effective_exec_path(self) -> str:
+        return self.exec_path or self.install_path
 
     @property
     def has_update(self) -> bool:

@@ -9,7 +9,7 @@ from typing import Iterator
 
 from appima.core.models import AppRecord
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS apps (
@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS apps (
     available_checksum TEXT NOT NULL DEFAULT '',
     available_checksum_algo TEXT NOT NULL DEFAULT '',
     install_path TEXT NOT NULL,
+    exec_path TEXT NOT NULL DEFAULT '',
     backup_path TEXT NOT NULL DEFAULT '',
     backup_version TEXT NOT NULL DEFAULT '',
     desktop_file TEXT NOT NULL DEFAULT '',
@@ -57,6 +58,7 @@ _COLUMNS = (
     "available_checksum",
     "available_checksum_algo",
     "install_path",
+    "exec_path",
     "backup_path",
     "backup_version",
     "desktop_file",
@@ -101,6 +103,14 @@ class Database:
     def _init_schema(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA_SQL)
+            existing_cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(apps)").fetchall()
+            }
+            if "exec_path" not in existing_cols:
+                conn.execute(
+                    "ALTER TABLE apps ADD COLUMN exec_path TEXT NOT NULL DEFAULT ''"
+                )
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
 
     @staticmethod

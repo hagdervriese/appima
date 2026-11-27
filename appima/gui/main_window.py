@@ -282,8 +282,8 @@ class MainWindow(QMainWindow):
         apps = self.manager.list_apps()
         if not apps:
             empty = QLabel(
-                f"No managed AppImages yet.\n\n"
-                f"Click \"+ Add App\" to install one into {self.manager.config.apps_dir}."
+                f"No managed apps yet.\n\n"
+                f"Click \"+ Add App\" to install an AppImage or portable archive into {self.manager.config.apps_dir}."
             )
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
             empty.setStyleSheet(
@@ -307,12 +307,12 @@ class MainWindow(QMainWindow):
         else:
             self.self_banner.setVisible(False)
 
-        # Check for unmanaged AppImages already sitting in apps_dir
+        # Check for unmanaged AppImages or portable app folders already sitting in apps_dir
         unmanaged = self.manager.scan_unmanaged()
         if unmanaged:
-            noun = "AppImage" if len(unmanaged) == 1 else "AppImages"
+            noun = "app" if len(unmanaged) == 1 else "apps"
             self.unmanaged_label.setText(
-                f"{len(unmanaged)} unmanaged {noun} found in {self.manager.config.apps_dir}"
+                f"{len(unmanaged)} unmanaged portable {noun} found in {self.manager.config.apps_dir}"
             )
             self.unmanaged_banner.setVisible(True)
         else:

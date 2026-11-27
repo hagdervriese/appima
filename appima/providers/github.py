@@ -27,6 +27,32 @@ _IGNORED_EXTENSIONS = (
     ".blockmap",
     ".txt",
 )
+_ARCHIVE_EXTENSIONS = (
+    ".tar.gz",
+    ".tgz",
+    ".tar.xz",
+    ".txz",
+    ".tar.bz2",
+    ".tbz2",
+    ".zip",
+)
+_NON_LINUX_HINTS = (
+    "win32",
+    "win64",
+    "windows",
+    "macos",
+    "darwin",
+    "osx",
+    "-mac-",
+    "_mac_",
+    ".dmg",
+    ".exe",
+    ".msi",
+    ".pkg",
+    ".deb",
+    ".rpm",
+    "source",
+)
 _CHECKSUM_FILE_HINTS = (
     "sha256",
     "sha512",
@@ -39,9 +65,12 @@ _CHECKSUM_FILE_HINTS = (
 def parse_github_repo(source: str) -> tuple[str, str] | None:
     """Parse owner/repo from a GitHub URL or shorthand (excludes direct file downloads)."""
     raw = source.strip()
-    if "/releases/download/" in raw and raw.lower().endswith(".appimage"):
-        # Direct binary URL: let DirectUrlProvider handle exact pinned files
-        # unless user passed a repo URL.
+    low = raw.lower()
+    if "/releases/download/" in low and (
+        low.endswith(".appimage")
+        or any(low.endswith(ext) for ext in _ARCHIVE_EXTENSIONS)
+    ):
+        # Direct binary/archive URL: let DirectUrlProvider handle exact pinned files
         return None
     m = _GITHUB_REPO_RE.match(raw)
     if m:
@@ -68,12 +97,27 @@ def _host_arch_aliases() -> tuple[tuple[str, ...], tuple[str, ...]]:
     return ((), ())
 
 
+def _pick_by_arch(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    preferred, excluded = _host_arch_aliases()
+    for asset in candidates:
+        low = str(asset["name"]).lower()
+        if any(tok in low for tok in preferred):
+            return asset
+    neutral = [
+        a
+        for a in candidates
+        if not any(tok in str(a["name"]).lower() for tok in excluded)
+    ]
+    return neutral[0] if neutral else candidates[0]
+
+
 def select_appimage_asset(
     assets: list[dict[str, Any]],
     asset_pattern: str = "",
 ) -> dict[str, Any]:
-    """Pick the best matching .AppImage asset from a GitHub release asset list."""
+    """Pick the best matching .AppImage or Linux portable archive from a GitHub release."""
     appimages: list[dict[str, Any]] = []
+    archives: list[dict[str, Any]] = []
     for asset in assets:
         name = str(asset.get("name") or "")
         low = name.lower()
@@ -81,38 +125,34 @@ def select_appimage_asset(
             continue
         if low.endswith(".appimage"):
             appimages.append(asset)
+        elif any(low.endswith(ext) for ext in _ARCHIVE_EXTENSIONS):
+            if not any(bad in low for bad in _NON_LINUX_HINTS):
+                archives.append(asset)
 
-    if not appimages:
-        raise ProviderError("No .AppImage asset found in the latest GitHub release.")
+    all_supported = appimages + archives
+    if not all_supported:
+        raise ProviderError(
+            "No .AppImage or Linux portable archive asset found in the latest GitHub release."
+        )
 
     if asset_pattern.strip():
         pat = asset_pattern.strip().lower()
-        matched = [a for a in appimages if fnmatch.fnmatch(str(a["name"]).lower(), pat)]
+        matched = [
+            a for a in all_supported if fnmatch.fnmatch(str(a["name"]).lower(), pat)
+        ]
         if not matched:
-            names = ", ".join(str(a["name"]) for a in appimages)
+            names = ", ".join(str(a["name"]) for a in all_supported)
             raise ProviderError(
-                f"No AppImage matched pattern {asset_pattern!r}. Available: {names}"
+                f"No release asset matched pattern {asset_pattern!r}. Available: {names}"
             )
         return matched[0]
 
-    preferred, excluded = _host_arch_aliases()
-    # 1. Explicitly matching host architecture
-    for asset in appimages:
-        low = str(asset["name"]).lower()
-        if any(tok in low for tok in preferred):
-            return asset
+    if appimages:
+        return _pick_by_arch(appimages)
 
-    # 2. Architecture-neutral (not explicitly for another architecture)
-    neutral = [
-        a
-        for a in appimages
-        if not any(tok in str(a["name"]).lower() for tok in excluded)
-    ]
-    if neutral:
-        return neutral[0]
-
-    # 3. Fallback to first AppImage if nothing matched
-    return appimages[0]
+    # Prefer archives explicitly tagged for Linux when falling back to tar/zip
+    linux_tagged = [a for a in archives if "linux" in str(a["name"]).lower()]
+    return _pick_by_arch(linux_tagged or archives)
 
 
 def find_checksum_asset_url(

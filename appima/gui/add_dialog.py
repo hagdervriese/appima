@@ -24,6 +24,7 @@ from appima.core.checksum import parse_checksum_input
 from appima.core.manager import AppManager
 from appima.core.models import AppimaError, AppRecord, DesktopConflict, ReleaseInfo
 from appima.formats.appimage import _guess_name_and_version
+from appima.formats.archive import _guess_archive_name_and_version, is_archive_file
 from appima.gui.conflict_dialog import ResolveConflictDialog
 from appima.gui.workers import ProgressWorker, TaskWorker
 
@@ -49,12 +50,12 @@ class AddAppDialog(QDialog):
         root.setContentsMargins(24, 22, 24, 20)
         root.setSpacing(16)
 
-        heading = QLabel("Add an AppImage")
+        heading = QLabel("Add a Portable App")
         heading.setStyleSheet("font-size: 16px; font-weight: 600;")
         root.addWidget(heading)
 
         subtitle = QLabel(
-            "Enter a GitHub repository URL, a direct download link, or pick a local .AppImage file."
+            "Enter a GitHub repo URL, a direct download link, or pick a local AppImage or archive (.tar.gz, .tar.xz, .zip)."
         )
         subtitle.setWordWrap(True)
         subtitle.setStyleSheet("color: palette(placeholder-text);")
@@ -65,7 +66,7 @@ class AddAppDialog(QDialog):
         source_row.setSpacing(8)
         self.source_edit = QLineEdit()
         self.source_edit.setPlaceholderText(
-            "https://github.com/owner/repo  or  /path/to/app.AppImage"
+            "https://github.com/owner/repo  or  /path/to/app.AppImage / .tar.gz"
         )
         self.source_edit.textChanged.connect(self._on_source_changed)
         source_row.addWidget(self.source_edit, 1)
@@ -96,11 +97,11 @@ class AddAppDialog(QDialog):
         form.addRow("Checksum", checksum_wrap)
 
         self.name_edit = QLineEdit()
-        self.name_edit.setPlaceholderText("Auto-detected from AppImage")
+        self.name_edit.setPlaceholderText("Auto-detected from package")
         form.addRow("Name", self.name_edit)
 
         self.pattern_edit = QLineEdit()
-        self.pattern_edit.setPlaceholderText("Optional asset filter, e.g. *x86_64*.AppImage")
+        self.pattern_edit.setPlaceholderText("Optional asset filter, e.g. *linux-x64*.tar.gz")
         form.addRow("Asset filter", self.pattern_edit)
         root.addLayout(form)
 
@@ -156,9 +157,12 @@ class AddAppDialog(QDialog):
     def _browse_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Select AppImage",
+            "Select AppImage or Portable Archive",
             str(Path.home()),
-            "AppImages (*.AppImage *.appimage);;All Files (*)",
+            "Portable Apps (*.AppImage *.appimage *.tar.gz *.tgz *.tar.xz *.txz *.tar.bz2 *.tbz2 *.zip);;"
+            "AppImages (*.AppImage *.appimage);;"
+            "Archives (*.tar.gz *.tgz *.tar.xz *.txz *.tar.bz2 *.tbz2 *.zip);;"
+            "All Files (*)",
         )
         if path:
             self.source_edit.setText(path)
@@ -242,7 +246,10 @@ class AddAppDialog(QDialog):
             return self.name_edit.text().strip()
         if release.name_hint:
             return release.name_hint
-        guessed, _ = _guess_name_and_version(release.filename)
+        if is_archive_file(Path(release.filename)):
+            guessed, _ = _guess_archive_name_and_version(release.filename)
+        else:
+            guessed, _ = _guess_name_and_version(release.filename)
         return guessed
 
     def _on_preview_error(self, message: str) -> None:

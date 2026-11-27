@@ -11,18 +11,18 @@ A clean, minimalist **AppImage & Portable App Manager** for Linux.
 - **Calm, uncluttered UI:** Native Qt 6 interface that inherits your KDE Breeze light/dark theme—every action has one clear home.
 - **Auditable core:** Zero third-party dependencies in the core engine and CLI (pure Python 3 standard library). Only `PySide6` is needed for the GUI.
 
-## Features (v0.1)
+## Features (v0.2)
 
-- **Install from anywhere:** GitHub Releases, direct download URLs, or local `.AppImage` files (including adopting AppImages already in `~/Apps`).
+- **AppImages & Portable Archives:** Manage both single-file `.AppImage` binaries and compressed portable bundles (`.tar.gz`, `.tgz`, `.tar.xz`, `.txz`, `.tar.bz2`, `.zip`)—including Electron apps (like Antigravity) and JetBrains/Android Studio tarballs (`product-info.json`), plus adopting existing app folders already in `~/Apps`.
+- **Install from anywhere:** GitHub Releases, direct download URLs, or local files/folders.
 - **Checksum verification:** Automatically detects MD5, SHA-256, SHA-512, or SHA-1 hashes, and auto-discovers companion checksum files (`SHA256SUMS`, `*.sha256`, `checksums.txt`) on GitHub Releases.
-- **Safe desktop integration:** Reads SquashFS metadata via `unsquashfs` (without executing untrusted binaries), extracts the icon and `.desktop` entry into `~/.local/share/applications/`, and refreshes your desktop menu automatically.
-- **Safe updates & rollback:** Tracks installed versions, updates binaries in place (keeping pinned panel icons intact), and saves a backup of the previous version for one-click rollback.
-- **Background update checks:** Optional `systemd --user` timer (configurable to Off / Every 6 hours / Daily / Weekly) with native desktop notifications—zero idle RAM usage.
+- **Safe desktop integration & duplicate guard:** Extracts metadata & icons into `~/.local/share/applications/`, checks for existing similar desktop entries (requiring a unique launcher name if you install multiple versions side-by-side), and lets you customize icons or archive launch binaries in Details.
+- **Safe updates, auto-restart & rollback:** Tracks installed versions, updates in place with automatic cleanup of old files, saves backups for one-click rollback, and automatically restarts after self-updates.
+- **Background update checks:** Optional `systemd --user` timer (Off / Every 6 hours / Daily / Weekly) with native desktop notifications—zero idle RAM usage.
 - **Per-app launch customization:** Optional extra launch arguments and environment variables (e.g. `--no-sandbox` or Wayland flags).
 
 ## Roadmap
 
-- **v0.2:** Portable archive support (`.tar.gz`, `.tar.xz`, `.zip`) for self-contained bundles such as Android Studio, JetBrains IDEs, and Antigravity.
 - **v0.3:** GitLab Releases provider, `.zsync` delta updates, and release notes viewer.
 
 ## Quick Start
